@@ -1,4 +1,6 @@
-1. Download and install json-cwx (json-c with extensions) from https://github.com/LLNL/json-cwx
+1. Download and install json-cwx (json-c with extensions) from https://github.com/LLNL/json-cwx.
+   You may install using spack:
+      % spack install json-cwx
 
 2. Create a build directory
       % mkdir build
