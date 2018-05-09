@@ -17,7 +17,8 @@
       Build TyphonIO Plugin:  -DENABLE_TYPHONIO_PLUGIN=ON -DWITH_TYPHONIO_PREFIX=[path to typhonio]
       Build PDB Plugin:       -DENABLE_PBD_PLUGIN=ON
       Build Exodus Plugin:    -DENABLE_EXODUS_PLUGIN=ON -DWITH_EXODUS_PREFIX=[path to exodus]
-      
+      Build Conduit Plugin:   -DENABLE_CONDUIT_PLUGIN=ON -DWITH_CONDUIT_PREFIX=[path to conduit]
+
 4. MACSio has default values for all command-line arguments. So if you
    just run the command './macsio', it will do something but probably
    not what you want. Here are some example command-lines. . .
