@@ -46,6 +46,7 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include <conduit/conduit.h>
 #include <conduit/conduit_blueprint.h>
 #include <conduit/conduit_relay.h>
+#include <conduit/conduit_utils.h>
 
 #define MAXKEYLEN 200
 
@@ -822,9 +823,6 @@ json_object_to_blueprint_rectilinear(json_object *part, const char *meshName)
     sprintf(key, "topologies/%s/type", meshName);
     conduit_node_set_path_char8_str(mesh, key, "rectilinear");
 
-    conduit_node_print(mesh);
-    conduit_node_print_detailed(mesh);
-
     return mesh;
 }
 
@@ -1008,6 +1006,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
     /* MPI rank and size. */
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
     size = JsonGetInt(main_obj, "parallel/mpi_size");
+    printf("rank=%d\nsize=%d\n", rank, size);
 
     parts = JsonGetObj(main_obj, "problem/parts");
     if(parts != NULL)
@@ -1017,6 +1016,8 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
         /* Build Conduit/Blueprint representations of the MACSio json data. */
         numParts = json_object_array_length(parts);
+        printf("numParts=%d\n", numParts);
+
         nodes = (conduit_node **)malloc(numParts * sizeof(conduit_node*));
         if(nodes != NULL)
         {
@@ -1051,21 +1052,52 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                 {
                     int ver = 0;
                     conduit_node *info = conduit_node_create();
-
-                    printf("Part %d/%d\n", i+1, nnodes);
-                    conduit_node_print(nodes[i]);
-
+/*
+                    if(i==0)
+                    {
+                        printf("Part %d/%d\n", i+1, nnodes);
+                        conduit_node_print(nodes[i]);
+                    }
+*/
                     ver = conduit_blueprint_verify("mesh",
                                                    nodes[i],
                                                    info);
 
-                    printf("verify = %d\n", ver);
-                    conduit_node_print_detailed(info);
+/*                    printf("verify = %d\n", ver);
+                    conduit_node_print(info);
+*/
                     conduit_node_destroy(info);
 
-                    /* Try IO */
-                    sprintf(filename, "part.%d", i);
-                    conduit_relay_io_save(nodes[i], filename);
+/*Q: How to store the time into the conduit dataset output. */
+
+                    /* Try IO -- the formats are determined by extension:
+                      hdf5, h5, silo, json, conduit_json, conduit_bin  */
+
+/* When I gave a .silo extension, I got a failure.
+optimusprime:MACSio_build bjw$ ./macsio/macsio --interface conduit > macsio.output.txt
+libc++abi.dylib: terminating with uncaught exception of type conduit::Error: 
+{
+  "file": "/Users/bjw/Development/IL/AICR/conduit/src/libs/relay/conduit_relay_io.cpp",
+  "line": 209,
+  "message": "conduit_relay lacks Silo support: Failed to save conduit node to path part.000.000.000.silo"
+}
+
+Abort trap: 6
+
+When I give it .h5, it makes the files but it fails in VisIt:
+The following error(s) may be helpful in identifying the problem:
+The pipeline object is being used improperly: File:/Users/bjw/Development/MAIN/trunk/builds_3.0.0_clang/conduit-v0.3.1/src/libs/conduit/conduit_node.cppLine:11859Message:Node::as_string() const -- DataType empty at path file_pattern does not equal expected DataType char8_str
+*/
+
+                    sprintf(filename, "/Users/bjw/Development/IL/AICR/MACSio_build/part.%03d.%03d.%03d.silo", dumpn, rank, i);
+
+                    if(strstr(filename, ".silo") != NULL)
+                    {
+                        /* If we're saving out to Silo format, force the mesh protocol. */
+                        conduit_relay_io_save2(nodes[i], filename, "conduit_silo_mesh");
+                    }
+                    else
+                        conduit_relay_io_save(nodes[i], filename);
                 }
             }
 
@@ -1088,6 +1120,28 @@ main_load(int argi, int argc, char **argv, char const *path, json_object *main_o
     int mpi_size = JsonGetInt(main_obj, "parallel/mpi_rank");
 }
 
+//-----------------------------------------------------------------------------
+static void 
+macsio_conduit_print_info(const char *msg, const char *file, int line)
+{
+    printf("Information:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+}
+
+//-----------------------------------------------------------------------------
+static void 
+macsio_conduit_print_warning(const char *msg, const char *file, int line)
+{
+    printf("Warning:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+}
+
+//-----------------------------------------------------------------------------
+static void 
+macsio_conduit_print_error(const char *msg, const char *file, int line)
+{
+    printf("Error:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+}
+
+//-----------------------------------------------------------------------------
 static int register_this_interface()
 {
     MACSIO_IFACE_Handle_t iface;
@@ -1096,6 +1150,9 @@ static int register_this_interface()
         MACSIO_LOG_MSG(Die, ("Interface name \"%s\" too long", iface_name));
 
 //#warning DO Conduit LIB WIDE (DEFAULT) INITIALIZATIONS HERE
+    conduit_utils_set_info_handler(macsio_conduit_print_info);
+    conduit_utils_set_warning_handler(macsio_conduit_print_warning);
+    conduit_utils_set_error_handler(macsio_conduit_print_error);
 
     /* Populate information about this plugin */
     strcpy(iface.name, iface_name);
