@@ -864,12 +864,60 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
 }
 
 /*-----------------------------------------------------------------------------*/
-static conduit_node *
-json_object_to_blueprint_curvilinear(json_object *part, const char *meshName)
+static void
+json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
+    const char *meshName, const char *topoName)
 {
-    /* Create the mesh */
-    conduit_node *mesh = conduit_node_create();
-    return mesh;
+    char key[MAXKEYLEN];
+    const char *ijkNames[] = {"i", "j", "k"};
+    const char *jsonAxisNames[] = {"Mesh/Coords/XCoords", "Mesh/Coords/YCoords", "Mesh/Coords/ZCoords"};
+    const char *conduitAxisNames[] = {"x", "y", "z", "r", "z", "", "r", "theta", "phi"};
+    int i, axisOffset = 0, dims[3] = {1,1,1}, ndims = 1;
+
+    /* Pick the names we'll use for the coordinate axes. */
+    if(strcmp(JsonGetStr(part, "Mesh/Coords/CoordBasis"), "X,Y,Z") == 0)
+        axisOffset = 0;
+    else if(strcmp(JsonGetStr(part, "Mesh/Coords/CoordBasis"), "R,Z") == 0)
+        axisOffset = 3;
+    else if(strcmp(JsonGetStr(part, "Mesh/Coords/CoordBasis"), "R,Theta,Phi") == 0)
+        axisOffset = 6;
+
+    /* Get the dimensions. */
+    ndims = JsonGetInt(part, "Mesh/TopoDim");
+    for(i = 0; i < ndims; ++i)
+    {
+        int v = JsonGetInt(part, "Mesh/LogDims", i);
+        if(v > 1)
+            dims[i] = v;
+    }
+
+    /* Create the coordinates for a curvilinear mesh, zero copy. */
+    conduit_node_set_path_char8_str(mesh, "coordsets/coords/type", "explicit");
+    for(i = 0; i < ndims; ++i)
+    {
+        json_object *arr = JsonGetObj(part, jsonAxisNames[i]);
+        if(arr != NULL)
+        {
+            double *data = (double *)json_object_extarr_data(arr);
+            if(data != NULL)
+            {
+                int nnodes = dims[0]*dims[1]*dims[2];
+                sprintf(key, "coordsets/coords/values/%s", conduitAxisNames[axisOffset + i]);
+                conduit_node_set_path_external_double_ptr(mesh, key, data, nnodes);
+            }
+        }
+    }
+
+    /* Topology */
+    sprintf(key, "topologies/%s/coordset", topoName);
+    conduit_node_set_path_char8_str(mesh, key, "coords");
+    sprintf(key, "topologies/%s/type", topoName);
+    conduit_node_set_path_char8_str(mesh, key, "structured");
+    for(i = 0; i < ndims; ++i)
+    {
+        sprintf(key, "topologies/%s/elements/dims/%s", topoName, ijkNames[i]);
+        conduit_node_set_path_int(mesh, key, dims[i]-1);
+    }
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -1015,9 +1063,9 @@ part_to_conduit(json_object *part, conduit_node *mesh, const char *meshName)
         json_object_to_blueprint_uniform(part, mesh, meshName, topoName);
     else if (!strcmp(meshName, "rectilinear"))
         json_object_to_blueprint_rectilinear(part, mesh, meshName, topoName);
-#if 0
     else if (!strcmp(meshName, "curvilinear"))
-        mesh = json_object_to_blueprint_curvilinear(part, meshName);
+        json_object_to_blueprint_curvilinear(part, mesh, meshName, topoName);
+#if 0
     else if (!strcmp(meshName, "ucdzoo"))
         mesh = json_object_to_blueprint_unstructured(part, meshName);
     else if (!strcmp(meshName, "arbitrary"))
@@ -1129,47 +1177,33 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                 {
                     int ver = 0;
                     conduit_node *info = conduit_node_create();
-
+/*#define DEBUG_PRINT*/
 #ifdef DEBUG_PRINT
-                    if(i==0)
-                    {
-                        printf("Part %d/%d\n", i+1, nnodes);
-                        conduit_node_print(nodes[i]);
-                    }
+                    /* Print the data and verify it with Blueprint. */
+                    printf("Part %d/%d\n", i+1, nnodes);
+                    conduit_node_print(nodes[i]);
                     printf("==================================================================\n");
-#endif
                     ver = conduit_blueprint_verify("mesh",
                                                    nodes[i],
                                                    info);
-#ifdef DEBUG_PRINT
                     printf("verify = %d\n", ver);
                     conduit_node_print(info);
                     printf("==================================================================\n");
-#endif
                     conduit_node_destroy(info);
 
-/*Q: How to store the time into the conduit dataset output. */
-
-                    /* Try IO -- the formats are determined by extension:
-                      hdf5, h5, silo, json, conduit_json, conduit_bin  */
-
-                    /* Save the data using Conduit. */
-#ifdef DEBUG_PRINT
                     printf("SAVING DATA\n==================================================================\n");
 #endif
+                    /* Save the data using Conduit. */
                     sprintf(filename, "part.%03d.%03d.%03d%s", rank, i, dumpn, g_preferred_protocol_ext);
                     conduit_relay_io_save2(nodes[i], filename, g_preferred_protocol);
                 }
 
+                /* Make the Blueprint index file. */
                 if(strcmp(g_preferred_protocol, "conduit_silo_mesh") != 0)
                 {
-                    /* Make the index. It gets stored in cindex. */
                     root  = conduit_node_create();
                     bp_idx = conduit_node_fetch(root, "blueprint_index");
-                    if(strcmp(g_preferred_protocol, "conduit_silo_mesh") != 0)
-                        cindex = conduit_node_fetch(bp_idx, meshName);
-                    else
-                        cindex = bp_idx;
+                    cindex = conduit_node_fetch(bp_idx, meshName);
 
 #ifdef DEBUG_PRINT
                     printf("GENERATE INDEX\n==================================================================\n");
@@ -1192,11 +1226,11 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     conduit_node_set_path_int(root, "number_of_trees", 1);
                     conduit_node_set_path_char8_str(root, "file_pattern", filename);
                     conduit_node_set_path_char8_str(root, "tree_pattern", "/");
-                    sprintf(rootname, "part.%03d.root", dumpn);
-                    /* Save the index using json. */
 #ifdef DEBUG_PRINT
                     printf("SAVE INDEX\n==================================================================\n");
 #endif
+                    /* Save the index using json. */
+                    sprintf(rootname, "part.%03d.root", dumpn);
                     conduit_relay_io_save2(root, rootname, "json");
                     conduit_node_destroy(root);
                 }
