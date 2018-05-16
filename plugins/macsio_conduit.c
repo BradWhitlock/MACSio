@@ -753,7 +753,6 @@ static int process_args(int argi, int argc, char *argv[])
 
     if(c_protocol != NULL)
         strcpy(g_preferred_protocol, c_protocol);
-printf("g_preferred_protocol = %s\n", g_preferred_protocol);
 
     /* Get a file format extension for the protocol -- this really ought to come from Conduit. */
     if(strcmp(g_preferred_protocol, "conduit_bin") == 0)
@@ -788,22 +787,25 @@ json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
     /* Create the coordinates for a rectilinear mesh, zero copy. */
     conduit_node_set_path_char8_str(mesh, "coordsets/coords/type", "uniform");
 
-    conduit_node_set_path_int(mesh, "coordsets/dims/i", JsonGetInt(part, "Mesh/Coords/NumX"));
-    conduit_node_set_path_double(mesh, "coordsets/origin/x", JsonGetDbl(part, "Mesh/Coords/OriginX"));
-    conduit_node_set_path_double(mesh, "coordsets/spacing/dx", JsonGetDbl(part, "Mesh/Coords/DeltaX"));
-
-    if(JsonGetInt(part, "Mesh/Coords/GeomDim") > 1)
+    if(JsonGetInt(part, "Mesh/Coords/NumX") > 0)
     {
-        conduit_node_set_path_int(mesh, "coordsets/dims/j", JsonGetInt(part, "Mesh/Coords/NumY"));
-        conduit_node_set_path_double(mesh, "coordsets/origin/y", JsonGetDbl(part, "Mesh/Coords/OriginY"));
-        conduit_node_set_path_double(mesh, "coordsets/spacing/dy", JsonGetDbl(part, "Mesh/Coords/DeltaY"));
+        conduit_node_set_path_int(mesh, "coordsets/coords/dims/i", JsonGetInt(part, "Mesh/Coords/NumX"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/origin/x", JsonGetDbl(part, "Mesh/Coords/OriginX"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/spacing/dx", JsonGetDbl(part, "Mesh/Coords/DeltaX"));
     }
 
-    if(JsonGetInt(part, "Mesh/Coords/GeomDim") > 2)
+    if(JsonGetInt(part, "Mesh/Coords/NumY") > 0)
     {
-        conduit_node_set_path_int(mesh, "coordsets/dims/k", JsonGetInt(part, "Mesh/Coords/NumZ"));
-        conduit_node_set_path_double(mesh, "coordsets/origin/z", JsonGetDbl(part, "Mesh/Coords/OriginZ"));
-        conduit_node_set_path_double(mesh, "coordsets/spacing/dz", JsonGetDbl(part, "Mesh/Coords/DeltaZ"));
+        conduit_node_set_path_int(mesh, "coordsets/coords/dims/j", JsonGetInt(part, "Mesh/Coords/NumY"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/origin/y", JsonGetDbl(part, "Mesh/Coords/OriginY"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/spacing/dy", JsonGetDbl(part, "Mesh/Coords/DeltaY"));
+    }
+
+    if(JsonGetInt(part, "Mesh/Coords/NumZ") > 1)
+    {
+        conduit_node_set_path_int(mesh, "coordsets/coords/dims/k", JsonGetInt(part, "Mesh/Coords/NumZ"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/origin/z", JsonGetDbl(part, "Mesh/Coords/OriginZ"));
+        conduit_node_set_path_double(mesh, "coordsets/coords/spacing/dz", JsonGetDbl(part, "Mesh/Coords/DeltaZ"));
     }
 
     /* Topology */
