@@ -49,6 +49,7 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include <conduit/conduit_utils.h>
 
 #define MAXKEYLEN 200
+#define MAXMSGLEN 2048
 
 /* Disable debugging messages */
 
@@ -635,6 +636,22 @@ static char g_preferred_protocol[100];
 static char g_preferred_protocol_ext[100];
 
 /*-----------------------------------------------------------------------------*/
+void
+macsio_conduit_finalize(void)
+{
+    if(g_conduit_about != NULL)
+    {
+        conduit_node_destroy(g_conduit_about);
+        g_conduit_about = NULL;
+    }
+    if(g_conduit_relay_about != NULL)
+    {
+        conduit_node_destroy(g_conduit_relay_about);
+        g_conduit_relay_about = NULL;
+    }
+}
+
+/*-----------------------------------------------------------------------------*/
 static void
 set_preferred_protocol(void)
 {
@@ -778,7 +795,7 @@ static int process_args(int argi, int argc, char *argv[])
 }
 
 /*-----------------------------------------------------------------------------*/
-static void
+static int
 json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
     const char *topoName)
 {
@@ -815,10 +832,12 @@ json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
     conduit_node_set_path_char8_str(mesh, key, "uniform");
 
     /* offset into global -- do we need it? conduit_node_set_path_int(mesh, "topologies/topo/origin/i0", 0); */
+
+    return 0;
 }
 
 /*-----------------------------------------------------------------------------*/
-static void
+static int
 json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
     const char *topoName)
 {
@@ -863,6 +882,8 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
     conduit_node_set_path_char8_str(mesh, key, "coords");
     sprintf(key, "topologies/%s/type", topoName);
     conduit_node_set_path_char8_str(mesh, key, "rectilinear");
+
+    return 0;
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -910,7 +931,7 @@ json_object_to_blueprint_explicit_coords(json_object *part, conduit_node *mesh,
 }
 
 /*-----------------------------------------------------------------------------*/
-static void
+static int
 json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
     const char *topoName)
 {
@@ -931,16 +952,65 @@ json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
         sprintf(key, "topologies/%s/elements/dims/%s", topoName, ijkNames[i]);
         conduit_node_set_path_int(mesh, key, dims[i]-1);
     }
+
+    return 0;
 }
 
 /*-----------------------------------------------------------------------------*/
-static void
+static int
 json_object_to_blueprint_unstructured(json_object *part, conduit_node *mesh,
     const char *topoName)
 {
     char key[MAXKEYLEN];
-    int ndims = 1, dims[3] = {1,1,1};
+    int ndims = 1, dims[3] = {1,1,1}, err = 0;
     json_object *nodelist = NULL;
+
+    /* Topology */
+    sprintf(key, "topologies/%s/elements/shape", topoName);
+    if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Beam2") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "line");
+    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Quad4") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "quad");
+    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Hex8") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "hex");
+    else
+    {
+        MACSIO_LOG_MSG(Warn, ("Unsupported element type."));
+        err = 1;
+    }
+    if(err == 0)
+    {
+        /* More Topology */
+        sprintf(key, "topologies/%s/coordset", topoName);
+        conduit_node_set_path_char8_str(mesh, key, "coords");
+        sprintf(key, "topologies/%s/type", topoName);
+        conduit_node_set_path_char8_str(mesh, key, "unstructured");
+
+        /* Pass the node list zero copy. */
+        nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
+        sprintf(key, "topologies/%s/elements/connectivity", topoName);
+        conduit_node_set_path_external_int_ptr(mesh, key, 
+            (int *)json_object_extarr_data(nodelist),
+            json_object_extarr_nvals(nodelist));
+
+        /* Add the explicit coordinates. */
+        json_object_to_blueprint_explicit_coords(part, mesh, &ndims, dims);
+    }
+
+    return err;
+}
+
+/*-----------------------------------------------------------------------------*/
+static int
+json_object_to_blueprint_arbitrary(json_object *part, conduit_node *mesh,
+    const char *topoName)
+{
+    char key[MAXKEYLEN];
+    int ndims = 1, dims[3] = {1,1,1};
+    json_object *nodelist = NULL, *facelist = NULL;
+
+    MACSIO_LOG_MSG(Warn, ("Conduit does not support arbitrary polyhedral "
+                          "meshes. Save only faces."));
 
     /* Add the explicit coordinates. */
     json_object_to_blueprint_explicit_coords(part, mesh, &ndims, dims);
@@ -951,32 +1021,67 @@ json_object_to_blueprint_unstructured(json_object *part, conduit_node *mesh,
     sprintf(key, "topologies/%s/type", topoName);
     conduit_node_set_path_char8_str(mesh, key, "unstructured");
     sprintf(key, "topologies/%s/elements/shape", topoName);
-    if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Beam2") == 0)
+    if (ndims == 1)
+    {
         conduit_node_set_path_char8_str(mesh, key, "line");
-    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Quad4") == 0)
-        conduit_node_set_path_char8_str(mesh, key, "quad");
-    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Hex8") == 0)
-        conduit_node_set_path_char8_str(mesh, key, "hex");
-    /* Pass the node list zero copy. */
-    nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
-    sprintf(key, "topologies/%s/elements/connectivity", topoName);
-    conduit_node_set_path_external_int_ptr(mesh, key, 
-        (int *)json_object_extarr_data(nodelist),
-        json_object_extarr_nvals(nodelist));
-}
+        /* Pass the node list zero copy. */
+        nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
+        sprintf(key, "topologies/%s/elements/connectivity", topoName);
+        conduit_node_set_path_external_int_ptr(mesh, key, 
+            (int *)json_object_extarr_data(nodelist),
+            json_object_extarr_nvals(nodelist));
+    }
+    else if(ndims == 2)
+    {
+        int *conn = NULL, *dest = NULL;
+        int *nl = NULL, *fl = NULL, i, n, nf;
+        nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
+        facelist = JsonGetObj(part, "Mesh/Topology/Facelist");
+        n = json_object_extarr_nvals(facelist);
+        nf = n / 4;
 
-/*-----------------------------------------------------------------------------*/
-static conduit_node *
-json_object_to_blueprint_arbitrary(json_object *part, const char *meshName)
-{
-    /* Create the mesh */
-    conduit_node *mesh = conduit_node_create();
-    return mesh;
+        /* Use the facelist and nodelist to make quads from edges. */
+        conn = (int *)malloc(n * sizeof(int));
+        nl = (int *)json_object_extarr_data(nodelist);
+        fl = (int *)json_object_extarr_data(facelist);
+        dest = conn;
+        for(i = 0; i < nf; ++i)
+        {
+            int *e0, *e1;
+            /* The first 2 edges that make up the shape. */
+            e0 = nl + 2*fl[i*4];
+            e1 = nl + 2*fl[i*4+1];
+
+            dest[0] = e0[0];
+            dest[1] = e1[0];
+            dest[2] = e1[1];
+            dest[3] = e0[1];
+
+            dest += 4;
+        }
+
+        /* Pass the node list but we have to pass a reordered copy. */       
+        conduit_node_set_path_char8_str(mesh, key, "quad");
+        sprintf(key, "topologies/%s/elements/connectivity", topoName);
+        conduit_node_set_path_int_ptr(mesh, key, conn, n);
+    }
+    else if(ndims == 3)
+    {
+        conduit_node_set_path_char8_str(mesh, key, "quad");
+        /* Pass the node list zero copy. */
+        nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
+        sprintf(key, "topologies/%s/elements/connectivity", topoName);
+        conduit_node_set_path_external_int_ptr(mesh, key, 
+            (int *)json_object_extarr_data(nodelist),
+            json_object_extarr_nvals(nodelist));
+    }
+
+    return 0;
 }
 
 /*-----------------------------------------------------------------------------*/
 static void
-json_object_add_variables_to_conduit_mesh(json_object *part,
+json_object_add_variables_to_blueprint_mesh(json_object *part,
     conduit_node *mesh,
     const char *meshName,
     const char *topoName)
@@ -1078,27 +1183,25 @@ json_object_add_variables_to_conduit_mesh(json_object *part,
 
 /*-----------------------------------------------------------------------------*/
 /*Q: If there were multiple parts or meshes, would I need to prepend a mesh name to the path? */
-static conduit_node *
-part_to_conduit(json_object *part, conduit_node *mesh, const char *meshName)
+static void
+json_object_to_blueprint(json_object *part, conduit_node *mesh, const char *meshName)
 {
     const char *topoName = "mesh";
+    int err = 0;
 
     if (!strcmp(meshName, "uniform"))
-        json_object_to_blueprint_uniform(part, mesh, topoName);
+        err = json_object_to_blueprint_uniform(part, mesh, topoName);
     else if (!strcmp(meshName, "rectilinear"))
-        json_object_to_blueprint_rectilinear(part, mesh, topoName);
+        err = json_object_to_blueprint_rectilinear(part, mesh, topoName);
     else if (!strcmp(meshName, "curvilinear"))
-        json_object_to_blueprint_curvilinear(part, mesh, topoName);
+        err = json_object_to_blueprint_curvilinear(part, mesh, topoName);
     else if (!strcmp(meshName, "ucdzoo"))
-        json_object_to_blueprint_unstructured(part, mesh, topoName);
-#if 0
+        err = json_object_to_blueprint_unstructured(part, mesh, topoName);
     else if (!strcmp(meshName, "arbitrary"))
-        mesh = json_object_to_blueprint_arbitrary(part, meshName);
-#endif
+        err = json_object_to_blueprint_arbitrary(part, mesh, topoName);
 
-    json_object_add_variables_to_conduit_mesh(part, mesh, meshName, topoName);
-
-    return mesh;
+    if(err == 0)
+        json_object_add_variables_to_blueprint_mesh(part, mesh, meshName, topoName);
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -1137,7 +1240,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
         /* Build Conduit/Blueprint representations of the MACSio json data. */
         numParts = json_object_array_length(parts);
-        printf("numParts=%d\n", numParts);
+        printf("%d: numParts=%d\n", rank, numParts);
 
         nodes = (conduit_node **)malloc(numParts * sizeof(conduit_node*));
         if(nodes != NULL)
@@ -1158,8 +1261,8 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
                     /* If we're using a format that will generate blueprint data
                      * then we need the blueprint index file for VisIt to be able
-                     * to read the file. For Silo, VisIt would use the Silo reader.
-                     * Creating the index via conduit_blueprint_mesh_generate_index
+                     * to read the file. For "conduit_silo_mesh", VisIt would use 
+                     * the Silo reader. Creating the index via conduit_blueprint_mesh_generate_index
                      * makes a mesh-named set in the index so we'd need to make
                      * sure that the data has that same level. Otherwise the index
                      * and the data don't match and VisIt chokes.
@@ -1169,9 +1272,12 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     else
                         mesh = nodes[nnodes];
 
+                    /* Add cycle, time */
                     conduit_node_set_path_double(mesh, "state/time", dumpt);
                     conduit_node_set_path_int(mesh, "state/cycle", dumpn);
-                    part_to_conduit(this_part, mesh, meshName);
+
+                    /* Add the blueprint mesh data. */
+                    json_object_to_blueprint(this_part, mesh, meshName);
 
                     nnodes++;
                 }
@@ -1283,21 +1389,30 @@ main_load(int argi, int argc, char **argv, char const *path, json_object *main_o
 static void 
 macsio_conduit_print_info(const char *msg, const char *file, int line)
 {
-    printf("Information:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+    char buf[MAXMSGLEN];
+    snprintf(buf, MAXMSGLEN, "File: %s\n  Line: %d\n  Information: %s", file, line, msg);
+    printf("%s\n", buf);
+    MACSIO_LOG_MSG(Info, (buf));
 }
 
 /*-----------------------------------------------------------------------------*/
 static void 
 macsio_conduit_print_warning(const char *msg, const char *file, int line)
 {
-    printf("Warning:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+    char buf[MAXMSGLEN];
+    snprintf(buf, MAXMSGLEN, "File: %s\n  Line: %d\n  Warning: %s\n", file, line, msg);
+    printf("%s\n", buf);
+    MACSIO_LOG_MSG(Warn, (buf));
 }
 
 /*-----------------------------------------------------------------------------*/
 static void 
 macsio_conduit_print_error(const char *msg, const char *file, int line)
 {
-    printf("Error:\n  File: %s\n  Line: %d\n  Message: %s\n", file, line, msg);
+    char buf[MAXMSGLEN];
+    snprintf(buf, MAXMSGLEN, "File: %s\n  Line: %d\n  Error: %s\n", file, line, msg);
+    printf("%s\n", buf);
+    MACSIO_LOG_MSG(Err, (buf));
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -1309,6 +1424,7 @@ static int register_this_interface()
         MACSIO_LOG_MSG(Die, ("Interface name \"%s\" too long", iface_name));
 
 //#warning DO Conduit LIB WIDE (DEFAULT) INITIALIZATIONS HERE
+    /* Install some message handlers for Conduit so we can print messages. */
     conduit_utils_set_info_handler(macsio_conduit_print_info);
     conduit_utils_set_warning_handler(macsio_conduit_print_warning);
     conduit_utils_set_error_handler(macsio_conduit_print_error);
@@ -1319,6 +1435,7 @@ static int register_this_interface()
     g_conduit_relay_about = conduit_node_create();
     conduit_relay_about(g_conduit_relay_about);
     set_preferred_protocol();
+    atexit(macsio_conduit_finalize);
 
     /* Populate information about this plugin */
     strcpy(iface.name, iface_name);
