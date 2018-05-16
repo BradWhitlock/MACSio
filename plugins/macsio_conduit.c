@@ -780,7 +780,7 @@ static int process_args(int argi, int argc, char *argv[])
 /*-----------------------------------------------------------------------------*/
 static void
 json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
-    const char *meshName, const char *topoName)
+    const char *topoName)
 {
     char key[MAXKEYLEN];
 
@@ -820,7 +820,7 @@ json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
 /*-----------------------------------------------------------------------------*/
 static void
 json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
-    const char *meshName, const char *topoName)
+    const char *topoName)
 {
     char key[MAXKEYLEN];
     json_object *json_x = NULL, *json_y = NULL, *json_z = NULL;
@@ -867,14 +867,13 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
 
 /*-----------------------------------------------------------------------------*/
 static void
-json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
-    const char *meshName, const char *topoName)
+json_object_to_blueprint_explicit_coords(json_object *part, conduit_node *mesh,
+    /*out*/int *ndims, /*out*/int dims[3])
 {
     char key[MAXKEYLEN];
-    const char *ijkNames[] = {"i", "j", "k"};
     const char *jsonAxisNames[] = {"Mesh/Coords/XCoords", "Mesh/Coords/YCoords", "Mesh/Coords/ZCoords"};
     const char *conduitAxisNames[] = {"x", "y", "z", "r", "z", "", "r", "theta", "phi"};
-    int i, axisOffset = 0, dims[3] = {1,1,1}, ndims = 1;
+    int i, axisOffset = 0;
 
     /* Pick the names we'll use for the coordinate axes. */
     if(strcmp(JsonGetStr(part, "Mesh/Coords/CoordBasis"), "X,Y,Z") == 0)
@@ -885,17 +884,16 @@ json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
         axisOffset = 6;
 
     /* Get the dimensions. */
-    ndims = JsonGetInt(part, "Mesh/TopoDim");
-    for(i = 0; i < ndims; ++i)
+    *ndims = JsonGetInt(part, "Mesh/TopoDim");
+    for(i = 0; i < *ndims; ++i)
     {
         int v = JsonGetInt(part, "Mesh/LogDims", i);
-        if(v > 1)
-            dims[i] = v;
+        dims[i] = (v > 1) ? v : 1;
     }
 
     /* Create the coordinates for a curvilinear mesh, zero copy. */
     conduit_node_set_path_char8_str(mesh, "coordsets/coords/type", "explicit");
-    for(i = 0; i < ndims; ++i)
+    for(i = 0; i < *ndims; ++i)
     {
         json_object *arr = JsonGetObj(part, jsonAxisNames[i]);
         if(arr != NULL)
@@ -909,6 +907,19 @@ json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
             }
         }
     }
+}
+
+/*-----------------------------------------------------------------------------*/
+static void
+json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
+    const char *topoName)
+{
+    char key[MAXKEYLEN];
+    const char *ijkNames[] = {"i", "j", "k"};
+    int i, ndims = 1, dims[3] = {1,1,1};
+
+    /* Add the explicit coordinates. */
+    json_object_to_blueprint_explicit_coords(part, mesh, &ndims, dims);
 
     /* Topology */
     sprintf(key, "topologies/%s/coordset", topoName);
@@ -923,12 +934,35 @@ json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
 }
 
 /*-----------------------------------------------------------------------------*/
-static conduit_node *
-json_object_to_blueprint_unstructured(json_object *part, const char *meshName)
+static void
+json_object_to_blueprint_unstructured(json_object *part, conduit_node *mesh,
+    const char *topoName)
 {
-    /* Create the mesh */
-    conduit_node *mesh = conduit_node_create();
-    return mesh;
+    char key[MAXKEYLEN];
+    int ndims = 1, dims[3] = {1,1,1};
+    json_object *nodelist = NULL;
+
+    /* Add the explicit coordinates. */
+    json_object_to_blueprint_explicit_coords(part, mesh, &ndims, dims);
+
+    /* Topology */
+    sprintf(key, "topologies/%s/coordset", topoName);
+    conduit_node_set_path_char8_str(mesh, key, "coords");
+    sprintf(key, "topologies/%s/type", topoName);
+    conduit_node_set_path_char8_str(mesh, key, "unstructured");
+    sprintf(key, "topologies/%s/elements/shape", topoName);
+    if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Beam2") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "line");
+    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Quad4") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "quad");
+    else if(strcmp(JsonGetStr(part, "Mesh/Topology/ElemType"), "Hex8") == 0)
+        conduit_node_set_path_char8_str(mesh, key, "hex");
+    /* Pass the node list zero copy. */
+    nodelist = JsonGetObj(part, "Mesh/Topology/Nodelist");
+    sprintf(key, "topologies/%s/elements/connectivity", topoName);
+    conduit_node_set_path_external_int_ptr(mesh, key, 
+        (int *)json_object_extarr_data(nodelist),
+        json_object_extarr_nvals(nodelist));
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -951,55 +985,38 @@ json_object_add_variables_to_conduit_mesh(json_object *part,
     json_object *vars_array = JsonGetObj(part, "Vars");
     if(vars_array != NULL)
     {
-        /* Compute sizes */
-        int i, ndims, ncells = 1, nnodes = 1, dims[3] = {1,1,1}, cdims[3] = {1,1,1};
-        ndims = JsonGetInt(part, "Mesh/GeomDim");
-        for(i = 0; i < ndims; ++i)
-        {
-            dims[i] = JsonGetInt(part, "Mesh/LogDims", i);
-            cdims[i] = dims[i]-1;
-            nnodes *= dims[i];
-            ncells *= cdims[i];
-        }
-
+        int i;
         /* Iterate over the fields in the part and add them to the mesh as Conduit fields.*/
-        int cent, dtype;
         for (i = 0; i < json_object_array_length(vars_array); i++)
         {
             json_object *varobj = NULL, *dataobj = NULL;
             if((varobj = json_object_array_get_idx(vars_array, i)) != NULL)
             {
-                int n = 0;
-
                 /* association */
                 sprintf(key, "fields/%s/association", JsonGetStr(varobj, "name"));
                 if(strcmp(JsonGetStr(varobj, "centering"),"zone") == 0)
-                {
                     conduit_node_set_path_char8_str(mesh, key, "element");
-                    n = ncells;
-                }
                 else
-                {
                     conduit_node_set_path_char8_str(mesh, key, "vertex");
-                    n = nnodes;
-                }
+
                 /* type */
                 sprintf(key, "fields/%s/type", JsonGetStr(varobj, "name"));
                 conduit_node_set_path_char8_str(mesh, key, "scalar");
-#if 0
-                /* volume_dependent */
-                sprintf(key, "fields/%s/volume_dependent", JsonGetStr(varobj, "name"));
-                conduit_node_set_path_char8_str(mesh, key, "false"); /* Does MACSio know? */
-#endif
+
                 /* topology */
                 sprintf(key, "fields/%s/topology", JsonGetStr(varobj, "name"));
                 conduit_node_set_path_char8_str(mesh, key, topoName);
 #if 0
+                /*NOTE: these fields seem optional. */
+                /* volume_dependent */
+                sprintf(key, "fields/%s/volume_dependent", JsonGetStr(varobj, "name"));
+                conduit_node_set_path_char8_str(mesh, key, "false"); /* Does MACSio know? */
+
                 /* grid_function */
                 sprintf(key, "fields/%s/grid_function", JsonGetStr(varobj, "name"));
                 conduit_node_set_path_char8_str(mesh, key, "braid");
 #endif
-/*CHECK: grid_function */
+
                 /* values */
                 sprintf(key, "fields/%s/values", JsonGetStr(varobj, "name"));
                 dataobj = JsonGetObj(varobj, "data");
@@ -1010,27 +1027,32 @@ json_object_add_variables_to_conduit_mesh(json_object *part,
                     if(dtype == json_extarr_type_flt32)
                     {
                         conduit_node_set_path_external_float_ptr(mesh, key, 
-                            (float *)json_object_extarr_data(dataobj), n);
+                            (float *)json_object_extarr_data(dataobj),
+                            json_object_extarr_nvals(dataobj));
                     }
                     else if(dtype == json_extarr_type_flt64)
                     {
                         conduit_node_set_path_external_double_ptr(mesh, key, 
-                            (double *)json_object_extarr_data(dataobj), n);
+                            (double *)json_object_extarr_data(dataobj),
+                            json_object_extarr_nvals(dataobj));
                     }
                     else if(dtype == json_extarr_type_int32)
                     {
                         conduit_node_set_path_external_int_ptr(mesh, key, 
-                            (int *)json_object_extarr_data(dataobj), n);
+                            (int *)json_object_extarr_data(dataobj),
+                            json_object_extarr_nvals(dataobj));
                     }
                     else if(dtype == json_extarr_type_int64)
                     {
                         conduit_node_set_path_external_long_ptr(mesh, key, 
-                            (long *)json_object_extarr_data(dataobj), n);
+                            (long *)json_object_extarr_data(dataobj),
+                            json_object_extarr_nvals(dataobj));
                     }
                     else if(dtype == json_extarr_type_byt08)
                     {
                         conduit_node_set_path_external_char_ptr(mesh, key, 
-                            (char *)json_object_extarr_data(dataobj), n);
+                            (char *)json_object_extarr_data(dataobj),
+                            json_object_extarr_nvals(dataobj));
                     }
                     else
                     {
@@ -1062,14 +1084,14 @@ part_to_conduit(json_object *part, conduit_node *mesh, const char *meshName)
     const char *topoName = "mesh";
 
     if (!strcmp(meshName, "uniform"))
-        json_object_to_blueprint_uniform(part, mesh, meshName, topoName);
+        json_object_to_blueprint_uniform(part, mesh, topoName);
     else if (!strcmp(meshName, "rectilinear"))
-        json_object_to_blueprint_rectilinear(part, mesh, meshName, topoName);
+        json_object_to_blueprint_rectilinear(part, mesh, topoName);
     else if (!strcmp(meshName, "curvilinear"))
-        json_object_to_blueprint_curvilinear(part, mesh, meshName, topoName);
-#if 0
+        json_object_to_blueprint_curvilinear(part, mesh, topoName);
     else if (!strcmp(meshName, "ucdzoo"))
-        mesh = json_object_to_blueprint_unstructured(part, meshName);
+        json_object_to_blueprint_unstructured(part, mesh, topoName);
+#if 0
     else if (!strcmp(meshName, "arbitrary"))
         mesh = json_object_to_blueprint_arbitrary(part, meshName);
 #endif
