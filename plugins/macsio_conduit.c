@@ -65,7 +65,7 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 
 /* the name you want to assign to the interface */
 static char const *iface_name = "conduit";
-static char const *iface_ext = "blueprint_root";
+static char const *iface_ext = "conduit";
 
 #if 0 /* HDF5 Junk */
 static int use_log = 0;
@@ -657,7 +657,8 @@ set_preferred_protocol(void)
 {
 #if 0
     strcpy(g_preferred_protocol, "json");
-    strcpy(g_preferred_protocol_ext, ".json");
+    strcpy(g_preferred_protocol_ext, "json");
+    printf("g_preferred_protocol = %s\n", g_preferred_protocol);
     return;
 #endif
 
@@ -665,7 +666,7 @@ set_preferred_protocol(void)
     if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/conduit_silo_mesh"))
     {
         strcpy(g_preferred_protocol, "conduit_silo_mesh");
-        strcpy(g_preferred_protocol_ext, ".silo");
+        strcpy(g_preferred_protocol_ext, "silo");
         return;
     }
 #endif
@@ -673,20 +674,20 @@ set_preferred_protocol(void)
     if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/hdf5"))
     {
         strcpy(g_preferred_protocol, "hdf5");
-        strcpy(g_preferred_protocol_ext, ".h5");
+        strcpy(g_preferred_protocol_ext, "h5");
         return;
     }
 
     if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/adios"))
     {
         strcpy(g_preferred_protocol, "adios");
-        strcpy(g_preferred_protocol_ext, ".bp");
+        strcpy(g_preferred_protocol_ext, "bp");
         /* Let the user pick a transport too (bp, hdf5, netcdf, flexpath, ...) */
         return;
     }
 
     strcpy(g_preferred_protocol, "conduit_bin");
-    strcpy(g_preferred_protocol_ext, ".bin");
+    strcpy(g_preferred_protocol_ext, "bin");
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -773,25 +774,42 @@ static int process_args(int argi, int argc, char *argv[])
 
     /* Get a file format extension for the protocol -- this really ought to come from Conduit. */
     if(strcmp(g_preferred_protocol, "conduit_bin") == 0)
-        strcpy(g_preferred_protocol_ext, ".bin");
+        strcpy(g_preferred_protocol_ext, "bin");
     else if(strcmp(g_preferred_protocol, "json") == 0)
-        strcpy(g_preferred_protocol_ext, ".json");
+        strcpy(g_preferred_protocol_ext, "json");
     else if(strcmp(g_preferred_protocol, "hdf5") == 0)
-        strcpy(g_preferred_protocol_ext, ".h5");
+        strcpy(g_preferred_protocol_ext, "h5");
     else if(strcmp(g_preferred_protocol, "conduit_silo") == 0)
-        strcpy(g_preferred_protocol_ext, ".silo");
+        strcpy(g_preferred_protocol_ext, "silo");
     else if(strcmp(g_preferred_protocol, "conduit_silo_mesh") == 0)
-        strcpy(g_preferred_protocol_ext, ".silo");
+        strcpy(g_preferred_protocol_ext, "silo");
     else if(strcmp(g_preferred_protocol, "mpi") == 0)
-        strcpy(g_preferred_protocol_ext, ".mpi");
+        strcpy(g_preferred_protocol_ext, "mpi");
     else if(strcmp(g_preferred_protocol, "adios") == 0) /* Do we want to do "adios_<transport>"? */
-        strcpy(g_preferred_protocol_ext, ".bp");
+        strcpy(g_preferred_protocol_ext, "bp");
     else
     {
         set_preferred_protocol();
     }
 
     return 0;
+}
+
+/*-----------------------------------------------------------------------------*/
+static void
+json_object_to_blueprint_origin(json_object *part, conduit_node *mesh,
+    const char *topoName)
+{
+    char key[MAXKEYLEN];
+    const char *originName[3] = {"i0", "j0", "k0"};
+    int i;
+    json_object *origin_obj = JsonGetObj(part, "GlobalLogOrigin");
+    for(i = 0; i < json_object_array_length(origin_obj); ++i)
+    {
+        int val = json_object_get_int(json_object_array_get_idx(origin_obj, i));
+        sprintf(key, "topologies/%s/elements/origin/%s", topoName, originName[i]);
+        conduit_node_set_path_int(mesh, key, val);
+    }
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -830,8 +848,7 @@ json_object_to_blueprint_uniform(json_object *part, conduit_node *mesh,
     conduit_node_set_path_char8_str(mesh, key, "coords");
     sprintf(key, "topologies/%s/type", topoName);
     conduit_node_set_path_char8_str(mesh, key, "uniform");
-
-    /* offset into global -- do we need it? conduit_node_set_path_int(mesh, "topologies/topo/origin/i0", 0); */
+    json_object_to_blueprint_origin(part, mesh, topoName);
 
     return 0;
 }
@@ -843,6 +860,7 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
 {
     char key[MAXKEYLEN];
     json_object *json_x = NULL, *json_y = NULL, *json_z = NULL;
+    int i, origin[3] = {0,0,0};
 
     /* Create the coordinates for a rectilinear mesh, zero copy. */
     conduit_node_set_path_char8_str(mesh, "coordsets/coords/type", "rectilinear");
@@ -854,6 +872,7 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
         {
             int n = JsonGetInt(part, "Mesh/LogDims", 0);
             conduit_node_set_path_external_double_ptr(mesh, "coordsets/coords/values/x", data, n);
+            origin[0] = JsonGetInt(part, "GlobalLogOrigin", 0);
         }
     }
     json_y = JsonGetObj(part, "Mesh/Coords/YAxisCoords");
@@ -864,6 +883,7 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
         {
             int n = JsonGetInt(part, "Mesh/LogDims", 1);
             conduit_node_set_path_external_double_ptr(mesh, "coordsets/coords/values/y", data, n);
+            origin[1] = JsonGetInt(part, "GlobalLogOrigin", 1);
         }
     }
     json_z = JsonGetObj(part, "Mesh/Coords/ZAxisCoords");
@@ -874,6 +894,7 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
         {
             int n = JsonGetInt(part, "Mesh/LogDims", 2);
             conduit_node_set_path_external_double_ptr(mesh, "coordsets/coords/values/z", data, n);
+            origin[2] = JsonGetInt(part, "GlobalLogOrigin", 2);
         }
     }
 
@@ -882,6 +903,7 @@ json_object_to_blueprint_rectilinear(json_object *part, conduit_node *mesh,
     conduit_node_set_path_char8_str(mesh, key, "coords");
     sprintf(key, "topologies/%s/type", topoName);
     conduit_node_set_path_char8_str(mesh, key, "rectilinear");
+    json_object_to_blueprint_origin(part, mesh, topoName);
 
     return 0;
 }
@@ -952,6 +974,7 @@ json_object_to_blueprint_curvilinear(json_object *part, conduit_node *mesh,
         sprintf(key, "topologies/%s/elements/dims/%s", topoName, ijkNames[i]);
         conduit_node_set_path_int(mesh, key, dims[i]-1);
     }
+    json_object_to_blueprint_origin(part, mesh, topoName);
 
     return 0;
 }
@@ -1182,7 +1205,6 @@ json_object_add_variables_to_blueprint_mesh(json_object *part,
 }
 
 /*-----------------------------------------------------------------------------*/
-/*Q: If there were multiple parts or meshes, would I need to prepend a mesh name to the path? */
 static void
 json_object_to_blueprint(json_object *part, conduit_node *mesh, const char *meshName)
 {
@@ -1272,9 +1294,11 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     else
                         mesh = nodes[nnodes];
 
-                    /* Add cycle, time */
+                    /* Add cycle, time, domain */
                     conduit_node_set_path_double(mesh, "state/time", dumpt);
                     conduit_node_set_path_int(mesh, "state/cycle", dumpn);
+                    conduit_node_set_path_int(mesh, "state/domain_id", 
+                        JsonGetInt(this_part, "Mesh/ChunkID"));
 
                     /* Add the blueprint mesh data. */
                     json_object_to_blueprint(this_part, mesh, meshName);
@@ -1301,11 +1325,20 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
             {
                 conduit_node *root = NULL, *bp_idx = NULL, *cindex = NULL, *props = NULL;
 
+                /* Get the file extension. If it has been overridden by the user,
+                 * then use that. Otherwise, use the file extension for our
+                 * preferred protocol.
+                 */
+                const char *ext = json_object_path_get_string(main_obj, "clargs/fileext");
+                if(strcmp(ext, iface_ext) == 0)
+                    ext = g_preferred_protocol_ext;
+
                 /* MIF: Write all of the parts to separate files. */
                 /* The comment about in transit probably applies here too. */
                 for(i = 0; i < nnodes; ++i)
                 {
                     int ver = 0;
+
                     conduit_node *info = conduit_node_create();
 /*#define DEBUG_PRINT*/
 #ifdef DEBUG_PRINT
@@ -1324,7 +1357,11 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     printf("SAVING DATA\n==================================================================\n");
 #endif
                     /* Save the data using Conduit. */
-                    sprintf(filename, "part.%03d.%03d.%03d%s", rank, i, dumpn, g_preferred_protocol_ext);
+                    sprintf(filename, "%s_conduit_%05d_%03d.%s",
+                            json_object_path_get_string(main_obj, "clargs/filebase"),
+                            i,
+                            dumpn,
+                            ext);
                     conduit_relay_io_save2(nodes[i], filename, g_preferred_protocol);
                 }
 
@@ -1354,13 +1391,21 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
                     conduit_node_set_path_int(root, "number_of_files", numParts);
                     conduit_node_set_path_int(root, "number_of_trees", 1);
+
+                    sprintf(filename, "%s_conduit_%s_%03d.%s",
+                            json_object_path_get_string(main_obj, "clargs/filebase"),
+                            "%05d",
+                            dumpn,
+                            ext);
                     conduit_node_set_path_char8_str(root, "file_pattern", filename);
                     conduit_node_set_path_char8_str(root, "tree_pattern", "/");
 #ifdef DEBUG_PRINT
                     printf("SAVE INDEX\n==================================================================\n");
 #endif
                     /* Save the index using json. */
-                    sprintf(rootname, "part.%03d.root", dumpn);
+                    sprintf(rootname, "%s_conduit_%03d.root",
+                            json_object_path_get_string(main_obj, "clargs/filebase"),
+                            dumpn);
                     conduit_relay_io_save2(root, rootname, "json");
                     conduit_node_destroy(root);
                 }
