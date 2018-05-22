@@ -475,7 +475,7 @@ static json_object *ProcessCommandLine(int argc, char *argv[], int *plugin_argi)
     return mainJargs;
 }
 
-static int
+static void
 write_timings_file(char const *filename)
 {
     char **timer_strs = 0, **rtimer_strs = 0;
@@ -533,7 +533,7 @@ static void spin()
 }
 
 
-static int
+static void
 main_write(int argi, int argc, char **argv, json_object *main_obj)
 {
     int rank = 0, dumpNum = 0, dumpCount = 0;
@@ -724,7 +724,7 @@ main_write(int argi, int argc, char **argv, json_object *main_obj)
 }
 
 ////#warning DO WE REALLY CALL IT THE MAIN_OBJ HERE
-static int
+static void
 main_read(int argi, int argc, char **argv, json_object *main_obj)
 {
     int loadNum;
