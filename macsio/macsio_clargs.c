@@ -727,7 +727,7 @@ MACSIO_CLARGS_ProcessCmdline(
          free(knownArgs->paramTypes);
       if (knownArgs->paramPtrs)
          free(knownArgs->paramPtrs);
-      if (knownArgs->paramFlags);
+      if (knownArgs->paramFlags)
          free(knownArgs->paramFlags);
       if (knownArgs->argName)
          free(knownArgs->argName);
