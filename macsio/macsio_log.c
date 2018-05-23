@@ -262,6 +262,8 @@ MACSIO_LOG_LogMsgWithDetails(
     char _sig[512], _msg[512], _err[512];
     char _mpistr[MPI_MAX_ERROR_STRING+1], _mpicls[MPI_MAX_ERROR_STRING+1];
     _sig[0] = _msg[0] = _err[0] = _mpistr[0] = _mpicls[0] = '\0';
+    if (log == NULL)
+        return;
     if (sevVal <= MACSIO_LOG_MsgDbg3 && sevVal >= MACSIO_LOG_DebugLevel)
         return;
     snprintf(_sig, sizeof(_sig), "%.4s:\"%s\":%d", sevStr, theFile, theLine);
