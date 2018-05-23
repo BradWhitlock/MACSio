@@ -142,10 +142,11 @@ extern "C" {
  *     - <tt>Build TyphonIO Plugin</tt>:  -DENABLE_TYPHONIO_PLUGIN=ON -DWITH_TYPHONIO_PREFIX=[path to typhonio]
  *     - <tt>Build PDB Plugin</tt>:       -DENABLE_PBD_PLUGIN=ON
  *     - <tt>Build Exodus Plugin</tt>:    -DENABLE_EXODUS_PLUGIN=ON -DWITH_EXODUS_PREFIX=[path to exodus]
+ *     - <tt>Build Conduit Plugin</tt>:   -DENABLE_CONDUIT_PLUGIN=ON -DWITH_CONDUIT_PREFIX=[path to conduit]
  *
  * Although MACSio is C Language, at a minimum it must be linked using a C++ linker due to
  * its use of non-constant expressions in static initializers to affect the static plugin
- * behavior. However, its conceivable that some C++'isms have crept into the code causing
+ * behavior. However, it is conceivable that some C++'isms have crept into the code causing
  * warnings or outright errors with some C compilers.
  *
  * In addition, MACSio sources currently include a large number of \c \#warning statements
