@@ -54,9 +54,8 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #define TREE_PATTERN "domain%07d"
 #define DIVIDER_STRING "==================================================================\n"
 
-/*#define DEBUG_PRINT*/
-
 /* Disable debugging messages */
+/*#define DEBUG_PRINT*/
 
 /*!
 \addtogroup plugins
@@ -134,19 +133,191 @@ set_preferred_protocol(void)
 }
 
 /*-----------------------------------------------------------------------------*/
+static char **macsio_conduit_protocols(int *nprotocols)
+{
+    conduit_node *iop = NULL;
+    char **protocols = NULL;
+    iop = conduit_node_fetch(g_conduit_relay_about, "io/protocols");
+    if(iop != NULL)
+    {
+        int i;
+        *nprotocols = conduit_node_number_of_children(iop);
+        protocols = (char **)malloc(sizeof(char*) * (*nprotocols + 1));
+        protocols[0] = strdup("json");
+        for(i = 0; i < *nprotocols; ++i)
+        {
+            char *p = conduit_node_path(conduit_node_child(iop, i));
+            if(p != NULL)
+            {
+                /* p is of the form "io/protocols/conduit_bin" */
+                char *start, *slash;
+                start = p;
+                slash = strrchr(p, '/');
+                if(slash != NULL)
+                    start = slash + 1;
+                protocols[i+1] = strdup(start);
+                free(p);
+            }
+            else
+                protocols[i+1] = strdup("");
+        }
+        *nprotocols = *nprotocols + 1;
+    }
+    else
+    {  
+        *nprotocols = 0;
+    }
+    return protocols;
+}
+
+/*-----------------------------------------------------------------------------*/
+static char *macsio_conduit_protocol_help_str(void)
+{
+    char **protocols = NULL;
+    char *protos = NULL;
+    int  i, nprotocols = 0, plen = 0;
+    const char *cp = "Output protocol for Conduit: [";
+    char *c_protocol = g_preferred_protocol;
+
+    protocols = macsio_conduit_protocols(&nprotocols);
+    plen += strlen(cp) + 2 + 1;
+    for(i = 0; i < nprotocols; ++i)
+    {
+        plen += strlen(protocols[i]) + 2 + 1;
+    }
+    protos = (char *)malloc(sizeof(char) * plen);
+    if(protos != NULL)
+    {
+        char *p = protos;
+        strcpy(p, cp);
+        p += strlen(cp);
+        for(i = 0; i < nprotocols; ++i)
+        {
+            if(i < nprotocols-1)
+            {
+                sprintf(p, "%s, ", protocols[i]);
+                p += strlen(protocols[i]) + 2;
+            }
+            else
+            {
+                strcpy(p, protocols[i]);
+                p += strlen(protocols[i]);
+            }
+        }
+        strcpy(p, "]\n");
+    }
+
+    for(i = 0; i < nprotocols; ++i)
+        free(protocols[i]);
+    if(nprotocols > 0)
+        free(protocols);
+
+    return protos;
+}
+
+/*-----------------------------------------------------------------------------*/
+static int macsio_conduit_count_options(conduit_node *n)
+{
+     int i, count = 0, nc = conduit_node_number_of_children(n);
+     if(nc > 0)
+     {
+         for(i = 0; i < nc; ++i)
+             count += macsio_conduit_count_options(conduit_node_child(n, i));
+     }
+     else
+     {
+         count = 1;
+     }
+
+     return count;
+}
+
+/*-----------------------------------------------------------------------------*/
+static char *macsio_conduit_add_options(conduit_node *n, char *p)
+{
+     int i, err = 0, count = 0, nc = conduit_node_number_of_children(n);
+     char *path, *key;
+     if(nc > 0)
+     {
+         for(i = 0; i < nc; ++i)
+             p = macsio_conduit_add_options(conduit_node_child(n, i), p);
+     }
+     else
+     {
+         path = conduit_node_path(n);
+         key = path + strlen("io/options/");
+         if(conduit_datatype_is_string(conduit_node_dtype(n)))
+             sprintf(p, "\t%s = \"%s\"\n", key, conduit_node_as_char8_str(n));
+         else if(conduit_datatype_is_int(conduit_node_dtype(n)))
+             sprintf(p, "\t%s = %d\n", key, conduit_node_as_int(n));
+         else if(conduit_datatype_is_float(conduit_node_dtype(n)))
+             sprintf(p, "\t%s = %f\n", key, conduit_node_as_float(n));
+         else if(conduit_datatype_is_double(conduit_node_dtype(n)))
+             sprintf(p, "\t%s = %lg\n", key, conduit_node_as_double(n));
+         else
+         {
+             /* TODO: fill in other types ...*/
+             err = 1;
+         }
+         if(err == 0)
+             p += strlen(p);
+         free(path);
+     }
+     return p;
+}
+
+/*-----------------------------------------------------------------------------*/
+static char *macsio_conduit_option_help_str(void)
+{
+     const char *co =
+         "Pass an option to the Conduit protocol. Options take the form of a path\n"
+         "followed by a value. Supported options and defaults are: \n\n";
+     conduit_node *options = NULL;
+     char *opts = NULL, *p = NULL;
+     int nopt = 0, len;
+
+     options = conduit_node_fetch(g_conduit_relay_about, "io/options");
+     if(options != NULL)
+         nopt = macsio_conduit_count_options(options);
+
+     len = strlen(co)+1 + nopt * 80; /* 80 char per option */
+     p = opts = (char *)malloc(sizeof(char) * len);
+     strcpy(p, co);
+     p += strlen(co);
+     if(options != NULL)
+         p = macsio_conduit_add_options(options, p);
+
+     return opts;
+}
+
+/*-----------------------------------------------------------------------------*/
 /* This is an entry point from MACSio to the conduit plugin. */
-static int xprocess_args(int argi, int argc, char *argv[])
+static int process_args(int argi, int argc, char *argv[])
 {
     const MACSIO_CLARGS_ArgvFlags_t argFlags = {MACSIO_CLARGS_WARN, MACSIO_CLARGS_TOMEM};
+    char *protos_str = NULL, *options_str = NULL;
+    char *c_protocol, *c_option;
+    char dummy[200];
 
-    char *c_protocol = g_preferred_protocol;
+    c_protocol = g_preferred_protocol;
+    c_option = dummy;
+
+    protos_str = macsio_conduit_protocol_help_str();
+    options_str = macsio_conduit_option_help_str();
 
     /* This thing seems to let MACSio parse args and put values into static global vars in this driver. */
     MACSIO_CLARGS_ProcessCmdline(0, argFlags, argi, argc, argv,
-        "--protocol %s", "hdf5",
-            "Output protocol for Conduit\n",
+        "--protocol %s", g_preferred_protocol,
+            protos_str,
             &c_protocol,
+        "--option %s %s", MACSIO_CLARGS_NODEFAULT,
+            options_str,
+            &c_option, &c_option, /* We don't parse the options using MACSio */
            MACSIO_CLARGS_END_OF_ARGS);
+
+    free(protos_str);
+    free(options_str);
+
 #if 0
     MACSIO_CLARGS_ProcessCmdline(0, argFlags, argi, argc, argv,
         "--show_errors", "",
@@ -1058,11 +1229,12 @@ conduit_macsio_get_file_modes(json_object *main_obj, FileWrite_t *writeT, int *n
             *nFiles = json_object_path_get_int(main_obj, "parallel/mpi_size");
         }
     }
-
+#if 0
     if(*writeT == FileWrite_MIF)
         printf("MIF, %d\n", *nFiles);
     else if(*writeT == FileWrite_MIF)
         printf("SIF, %d\n", *nFiles);
+#endif
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -1076,26 +1248,12 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
     char filename[1024], rootname[1024];
     const char *meshName = "Mesh";
 
-    /* What are we getting for these values? */
-    printf("argi=%d\n", argi);
-    printf("argc=%d\n", argc);
-    printf("argv={");
-    for(i = 0; i < argc; ++i)
-        printf("%s, ", argv[i]);
-    printf("}\n");
-    printf("dumpn=%d\n", dumpn);
-    printf("dumpt=%lg\n", dumpt);
-
     /* process cl args */
-    xprocess_args(argi, argc, argv);
-
-
-    /* Now, WTF is main_obj? Args and data? */
+    process_args(argi, argc, argv);
 
     /* MPI rank and size. */
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
     size = JsonGetInt(main_obj, "parallel/mpi_size");
-    printf("rank=%d\nsize=%d\n", rank, size);
 
     parts = JsonGetObj(main_obj, "problem/parts");
     if(parts != NULL)
@@ -1279,7 +1437,7 @@ static int register_this_interface()
     strcpy(iface.name, iface_name);
     strcpy(iface.ext, iface_ext);
     iface.dumpFunc = main_dump;
-    iface.processArgsFunc = xprocess_args;
+    iface.processArgsFunc = process_args;
 
     /* Register this plugin */
     if (!MACSIO_IFACE_Register(&iface))
