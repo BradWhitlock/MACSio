@@ -78,6 +78,23 @@ static char g_preferred_protocol[100];
 static char g_preferred_protocol_ext[100];
 
 /*-----------------------------------------------------------------------------*/
+/* We access this one through a function so we can defer its creation until
+ * later in the execution process. We store options for conduit protocols
+ * into this object. We add the options part of it to meshes that we later
+ * write out.
+ */
+conduit_node *
+relay_about(void)
+{
+    if(g_conduit_relay_about == NULL)
+    {
+        g_conduit_relay_about = conduit_node_create();
+        conduit_relay_about(g_conduit_relay_about);
+    }
+    return g_conduit_relay_about;
+}
+
+/*-----------------------------------------------------------------------------*/
 void
 macsio_conduit_finalize(void)
 {
@@ -105,7 +122,7 @@ set_preferred_protocol(void)
 #endif
 
 #if 0
-    if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/conduit_silo_mesh"))
+    if(conduit_node_has_path(relay_about(), "io/protocols/conduit_silo_mesh"))
     {
         strcpy(g_preferred_protocol, "conduit_silo_mesh");
         strcpy(g_preferred_protocol_ext, "silo");
@@ -113,14 +130,14 @@ set_preferred_protocol(void)
     }
 #endif
 
-    if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/hdf5"))
+    if(conduit_node_has_path(relay_about(), "io/protocols/hdf5"))
     {
         strcpy(g_preferred_protocol, "hdf5");
         strcpy(g_preferred_protocol_ext, "h5");
         return;
     }
 
-    if(conduit_node_has_path(g_conduit_relay_about, "io/protocols/adios"))
+    if(conduit_node_has_path(relay_about(), "io/protocols/adios"))
     {
         strcpy(g_preferred_protocol, "adios");
         strcpy(g_preferred_protocol_ext, "bp");
@@ -137,7 +154,7 @@ static char **macsio_conduit_protocols(int *nprotocols)
 {
     conduit_node *iop = NULL;
     char **protocols = NULL;
-    iop = conduit_node_fetch(g_conduit_relay_about, "io/protocols");
+    iop = conduit_node_fetch(relay_about(), "io/protocols");
     if(iop != NULL)
     {
         int i;
@@ -233,61 +250,112 @@ static int macsio_conduit_count_options(conduit_node *n)
 }
 
 /*-----------------------------------------------------------------------------*/
-static char *macsio_conduit_add_options(conduit_node *n, char *p)
+static void macsio_conduit_get_options(conduit_node *n, char **opt, int *nopt)
 {
      int i, err = 0, count = 0, nc = conduit_node_number_of_children(n);
      char *path, *key;
      if(nc > 0)
      {
          for(i = 0; i < nc; ++i)
-             p = macsio_conduit_add_options(conduit_node_child(n, i), p);
+             macsio_conduit_get_options(conduit_node_child(n, i), opt, nopt);
      }
      else
      {
          path = conduit_node_path(n);
          key = path + strlen("io/options/");
-         if(conduit_datatype_is_string(conduit_node_dtype(n)))
-             sprintf(p, "\t%s = \"%s\"\n", key, conduit_node_as_char8_str(n));
-         else if(conduit_datatype_is_int(conduit_node_dtype(n)))
-             sprintf(p, "\t%s = %d\n", key, conduit_node_as_int(n));
-         else if(conduit_datatype_is_float(conduit_node_dtype(n)))
-             sprintf(p, "\t%s = %f\n", key, conduit_node_as_float(n));
-         else if(conduit_datatype_is_double(conduit_node_dtype(n)))
-             sprintf(p, "\t%s = %lg\n", key, conduit_node_as_double(n));
-         else
-         {
-             /* TODO: fill in other types ...*/
-             err = 1;
-         }
-         if(err == 0)
-             p += strlen(p);
+         opt[*nopt] = strdup(key);        
          free(path);
+         *nopt = *nopt + 1;
      }
-     return p;
 }
 
 /*-----------------------------------------------------------------------------*/
-static char *macsio_conduit_option_help_str(void)
+static void macsio_conduit_add_options(conduit_node *n, char **opt, int nopt, char *p)
+{
+    int i;
+    for(i = 0; i < nopt; ++i)
+    {
+        int err = 0;
+        conduit_node *onode = NULL;
+        if((onode = conduit_node_fetch(n, opt[i])) != NULL)
+        {
+            if(conduit_datatype_is_string(conduit_node_dtype(onode)))
+                sprintf(p, "\t%s = \"%s\"\n", opt[i], conduit_node_as_char8_str(onode));
+            else if(conduit_datatype_is_int(conduit_node_dtype(onode)))
+                sprintf(p, "\t%s = %d\n", opt[i], conduit_node_as_int(onode));
+            else if(conduit_datatype_is_float(conduit_node_dtype(onode)))
+                sprintf(p, "\t%s = %f\n", opt[i], conduit_node_as_float(onode));
+            else if(conduit_datatype_is_double(conduit_node_dtype(onode)))
+                sprintf(p, "\t%s = %lg\n", opt[i], conduit_node_as_double(onode));
+            else
+            {
+                /* TODO: fill in other types ...*/
+                err = 1;
+            }
+            if(err == 0)
+                p += strlen(p);
+        }
+    }
+}
+
+/*-----------------------------------------------------------------------------*/
+static char *macsio_conduit_option_help_str(conduit_node *n, char **opt, int nopt)
 {
      const char *co =
          "Pass an option to the Conduit protocol. Options take the form of a path\n"
          "followed by a value. Supported options and defaults are: \n\n";
-     conduit_node *options = NULL;
      char *opts = NULL, *p = NULL;
-     int nopt = 0, len;
-
-     options = conduit_node_fetch(g_conduit_relay_about, "io/options");
-     if(options != NULL)
-         nopt = macsio_conduit_count_options(options);
+     int len;
 
      len = strlen(co)+1 + nopt * 80; /* 80 char per option */
      p = opts = (char *)malloc(sizeof(char) * len);
      strcpy(p, co);
      p += strlen(co);
-     if(options != NULL)
-         p = macsio_conduit_add_options(options, p);
+     macsio_conduit_add_options(n, opt, nopt, p);
 
      return opts;
+}
+
+/*-----------------------------------------------------------------------------*/
+static int process_option(conduit_node *n, const char *option, const char *value)
+{
+    int retval = 0;
+    conduit_node *onode = NULL;
+    if((onode = conduit_node_fetch(n, option)) != NULL)
+    {
+        if(conduit_datatype_is_string(conduit_node_dtype(onode)))
+            conduit_node_set_path_char8_str(n, option, value);
+        else if(conduit_datatype_is_int(conduit_node_dtype(onode)))
+        {
+            int v;
+            if(sscanf(value, "%d", &v) == 1)
+                conduit_node_set_path_int(n, option, v);
+            else
+                retval = 1;
+        }
+        else if(conduit_datatype_is_float(conduit_node_dtype(onode)))
+        {
+            float v;
+            if(sscanf(value, "%f", &v) == 1)
+                conduit_node_set_path_float(n, option, v);
+            else
+                retval = 1;
+        }
+        else if(conduit_datatype_is_double(conduit_node_dtype(onode)))
+        {
+            double v;
+            if(sscanf(value, "%lg", &v) == 1)
+                conduit_node_set_path_double(n, option, v);
+            else
+                retval = 1;
+        }
+        else
+        {
+            /* TODO: fill in other types ...*/
+            retval = 2;
+        }
+    }
+    return retval;
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -298,12 +366,28 @@ static int process_args(int argi, int argc, char *argv[])
     char *protos_str = NULL, *options_str = NULL;
     char *c_protocol, *c_option;
     char dummy[200];
+    char **opt = NULL;
+    int i, nopt = 0;
+    conduit_node *options = NULL;
 
     c_protocol = g_preferred_protocol;
     c_option = dummy;
 
+    /* Get options. */
+    options = conduit_node_fetch(relay_about(), "io/options");
+    if(options != NULL)
+    {
+        nopt = macsio_conduit_count_options(options);
+        if(nopt > 0)
+        {
+            int idx = 0;
+            opt = (char **)malloc(sizeof(char*)*(nopt+1));
+            macsio_conduit_get_options(options, opt, &idx);
+        }
+    }
+
     protos_str = macsio_conduit_protocol_help_str();
-    options_str = macsio_conduit_option_help_str();
+    options_str = macsio_conduit_option_help_str(options, opt, nopt);
 
     /* This thing seems to let MACSio parse args and put values into static global vars in this driver. */
     MACSIO_CLARGS_ProcessCmdline(0, argFlags, argi, argc, argv,
@@ -319,68 +403,38 @@ static int process_args(int argi, int argc, char *argv[])
     free(options_str);
 
 #if 0
-    MACSIO_CLARGS_ProcessCmdline(0, argFlags, argi, argc, argv,
-        "--show_errors", "",
-            "Show low-level HDF5 errors",
-            &c_format,
-        "--compression %s %s", MACSIO_CLARGS_NODEFAULT,
-            "The first string argument is the compression algorithm name. The second\n"
-            "string argument is a comma-separated set of params of the form\n"
-            "'param1=val1,param2=val2,param3=val3. The various algorithm names and\n"
-            "their parameter meanings are described below. Note that some parameters are\n"
-            "not specific to any algorithm. Those are described first followed by\n"
-            "individual algorithm-specific parameters.\n"
-            "\n"
-            "minsize=%d : min. size of dataset (in terms of a count of values)\n"
-            "    upon which compression will even be attempted. Default is 1024.\n"
-            "shuffle=<int>: Boolean (zero or non-zero) to indicate whether to use\n"
-            "    HDF5's byte shuffling filter *prior* to compression. Default depends\n"
-            "    on algorithm. By default, shuffling is NOT used for lindstrom-zfp but IS\n"
-            "    used with all other algorithms.\n"
-            "\n"
-
-            "\"szip\"\n"
-            "    method=%s : specify 'ec' for entropy coding or 'nn' for nearest\n"
-            "        neighbor. Default is 'nn'\n"
-            "    block=%d : (pixels-per-block) must be an even integer <= 32. See\n"
-            "        See H5Pset_szip in HDF5 documentation for more information.\n"
-            "        Default is 32.\n"
-            "    chunk=%d:%d : colon-separated dimensions specifying chunk size in\n"
-            "        each dimension higher than the first (fastest varying) dimension.\n"
-            "\n"
-            "\"gzip\"\n"
-            "    level=%d : A value in the range [1,9], inclusive, trading off time to\n"
-            "        compress with amount of compression. Level=1 results in best speed\n"
-            "        but worst compression whereas level=9 results in best compression\n"
-            "        but worst speed. Values outside [1,9] are clamped. Default is 9.\n"
-            "\n"
-            "Examples:\n"
-            "    --compression lindstrom-zfp rate=18.5\n"
-            "    --compression gzip minsize=1024,level=9\n"
-            "    --compression szip shuffle=0,options=nn,pixels_per_block=16\n"
-            "\n",
-            &c_alg, &c_params,
-        "--no_collective", "",
-            "Use independent, not collective, I/O calls in SIF mode.",
-            &no_collective,
-        "--no_single_chunk", "",
-            "Do not single chunk the datasets (currently ignored).",
-            &no_single_chunk,
-        "--sieve_buf_size %d", MACSIO_CLARGS_NODEFAULT,
-            "Specify sieve buffer size (see H5Pset_sieve_buf_size)",
-            &sbuf_size,
-        "--meta_block_size %d", MACSIO_CLARGS_NODEFAULT,
-            "Specify size of meta data blocks (see H5Pset_meta_block_size)",
-            &mbuf_size,
-        "--small_block_size %d", MACSIO_CLARGS_NODEFAULT,
-            "Specify threshold size for data blocks considered to be 'small'\n"
-            "(see H5Pset_small_data_block_size)",
-            &rbuf_size,
-        "--log", "",
-            "Use logging Virtual File Driver (see H5Pset_fapl_log)",
-            &use_log,
-           MACSIO_CLARGS_END_OF_ARGS);
+    printf("BEFORE:\n");
+    conduit_node_print(options);
 #endif
+    /* Handle --option */
+    for(i = argi; i < argc; ++i)
+    {
+        if(strcmp(argv[i], "--option") == 0)
+        {
+            const char *option, *value;
+            int oret = 0;
+            option = argv[i+1];
+            value = argv[i+2];
+            oret = process_option(options, option, value);
+            if(oret == 1)
+            {
+                MACSIO_LOG_MSG(Die, ("Invalid value for option %s", option));
+            }
+            else if(oret == 2)
+            {
+                MACSIO_LOG_MSG(Die, ("Unsupported type for option %s", option));
+            }
+            i += 2;
+        }
+    }
+#if 0
+    printf("AFTER:\n");
+    conduit_node_print(options);
+#endif
+
+    for(i = 0; i < nopt; ++i)
+        free(opt[i]);
+    free(opt);
 
     /* Get a file format extension for the protocol -- this really ought to come from Conduit. */
     if(strcmp(g_preferred_protocol, "conduit_bin") == 0)
@@ -866,6 +920,30 @@ conduit_relay_io_supports_collective(const char *protocol)
 }
 
 /*-----------------------------------------------------------------------------*/
+/* @brief If there are I/O options for the selected protocol then add them to
+ *        the input conduit node so we can pass them down to the data writing
+ *        routines in relay.
+ */
+static void macsio_conduit_add_protocol_options(conduit_node *n)
+{
+    char key[MAXKEYLEN];
+    conduit_node *p_options = NULL, *options = NULL;
+
+    /* Try and get options for the preferred protocol. We do it like this so
+     * other protocol's options don't get saved too.
+     */
+    sprintf(key, "io/options/%s", g_preferred_protocol);
+    if(conduit_node_has_path(relay_about(), key))
+    {
+        p_options = conduit_node_fetch(relay_about(), key);
+        /* Make an "options" node under n. */
+        options = conduit_node_fetch(n, "options");
+        /* Add the protocol node under "options" */
+        conduit_node_set_path_external_node(options, g_preferred_protocol, p_options);
+    }
+}
+
+/*-----------------------------------------------------------------------------*/
 /* Given a conduit node that contains multiple branches named "domain0", "domain1",
  * ... save the domains to a file through Conduit.
  *
@@ -880,7 +958,6 @@ macsio_conduit_sif_write(json_object *main_obj,
 {
     int msg, tag = 12345;
     char filename[MAXFILENAMELEN], rootname[MAXFILENAMELEN];
-
     int rank, size;
     const char *ext = NULL;
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
@@ -889,7 +966,10 @@ macsio_conduit_sif_write(json_object *main_obj,
     if(strcmp(ext, iface_ext) == 0)
         ext = g_preferred_protocol_ext;
 
+    /* Add write options to mesh_root */
+    macsio_conduit_add_protocol_options(mesh_root);
 #ifdef DEBUG_PRINT
+    printf("SIF: mesh\n" DIVIDER_STRING);
     conduit_node_print(mesh_root);
 #endif
 
@@ -941,7 +1021,7 @@ macsio_conduit_sif_write(json_object *main_obj,
         conduit_relay_io_save2(mesh_root, filename, g_preferred_protocol);
 #endif
     }
-    MACSIO_UTILS_RecordOutputFiles(dumpn, filename);
+    /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
 
     /* Make the index file for protocols that don't make Silo mesh files. */
     if(rank == 0 && strcmp(g_preferred_protocol, "conduit_silo_mesh") != 0)
@@ -980,7 +1060,7 @@ macsio_conduit_sif_write(json_object *main_obj,
             dumpn);
         conduit_relay_io_save2(bp_root, rootname, "json");
         conduit_node_destroy(bp_root);
-        MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);
+        /*MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);*/
     }
 }
 
@@ -1067,9 +1147,15 @@ macsio_conduit_mif_write(json_object *main_obj,
                     domain_id,
                     dumpn,
                     ext);
+            /* Add write options to the individual mesh */
+            macsio_conduit_add_protocol_options(nodes[i]);
+#ifdef DEBUG_PRINT
+            printf("MIF: mesh %d\n" DIVIDER_STRING, domain_id);
+            conduit_node_print(nodes[i]);
+#endif
 
             conduit_relay_io_save2(nodes[i], filename, g_preferred_protocol);
-            MACSIO_UTILS_RecordOutputFiles(dumpn, filename);
+            /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
         }
         /* We'll have numParts (global number of parts) files*/
         np = numParts;
@@ -1088,6 +1174,13 @@ macsio_conduit_mif_write(json_object *main_obj,
             MACSIO_LOG_MSG(Warn, ("The output number of files %d is greater "
                "than %d ranks. The number of files will be %d", nFiles, size, size));
         }
+
+        /* Add write options to the mesh_root */
+        macsio_conduit_add_protocol_options(nodes[i]);
+#ifdef DEBUG_PRINT
+        printf("MIF: mesh\n" DIVIDER_STRING);
+        conduit_node_print(nodes[i]);
+#endif
 
         /* We'll make some number of files and some will be written by
          * more than one processor.
@@ -1117,7 +1210,7 @@ macsio_conduit_mif_write(json_object *main_obj,
         /* We're done using MACSIO_MIF, so finish it off */
         MACSIO_MIF_Finish(bat);
 
-        MACSIO_UTILS_RecordOutputFiles(dumpn, filename);
+        /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
 
         /* We'll have nFiles files since multiple ranks might write same file. */
         np = (nFiles > size) ? size : nFiles;
@@ -1169,7 +1262,7 @@ macsio_conduit_mif_write(json_object *main_obj,
                 dumpn);
         conduit_relay_io_save2(root, rootname, "json");
         conduit_node_destroy(root);
-        MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);
+        /*MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);*/
     }
 }
 
@@ -1263,8 +1356,6 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
         /* Build Conduit/Blueprint representations of the MACSio json data. */
         numParts = json_object_array_length(parts);
-        printf("%d: numParts=%d\n", rank, numParts);
-
         nodes = (conduit_node **)malloc(numParts * sizeof(conduit_node*));
         if(nodes != NULL)
         {
@@ -1428,8 +1519,6 @@ static int register_this_interface()
     /* Get some information about the library. */
     g_conduit_about = conduit_node_create();
     conduit_about(g_conduit_about);
-    g_conduit_relay_about = conduit_node_create();
-    conduit_relay_about(g_conduit_relay_about);
     set_preferred_protocol();
     atexit(macsio_conduit_finalize);
 
