@@ -159,8 +159,7 @@ static char **macsio_conduit_protocols(int *nprotocols)
     {
         int i;
         *nprotocols = conduit_node_number_of_children(iop);
-        protocols = (char **)malloc(sizeof(char*) * (*nprotocols + 1));
-        protocols[0] = strdup("json");
+        protocols = (char **)malloc(sizeof(char*) * (*nprotocols));
         for(i = 0; i < *nprotocols; ++i)
         {
             char *p = conduit_node_path(conduit_node_child(iop, i));
@@ -172,13 +171,12 @@ static char **macsio_conduit_protocols(int *nprotocols)
                 slash = strrchr(p, '/');
                 if(slash != NULL)
                     start = slash + 1;
-                protocols[i+1] = strdup(start);
+                protocols[i] = strdup(start);
                 free(p);
             }
             else
-                protocols[i+1] = strdup("");
+                protocols[i] = strdup("");
         }
-        *nprotocols = *nprotocols + 1;
     }
     else
     {  
@@ -920,27 +918,19 @@ conduit_relay_io_supports_collective(const char *protocol)
 }
 
 /*-----------------------------------------------------------------------------*/
-/* @brief If there are I/O options for the selected protocol then add them to
- *        the input conduit node so we can pass them down to the data writing
- *        routines in relay.
+/* @brief Get the I/O options for the preferred protocol.
  */
-static void macsio_conduit_add_protocol_options(conduit_node *n)
+static conduit_node *macsio_conduit_get_protocol_options(void)
 {
     char key[MAXKEYLEN];
-    conduit_node *p_options = NULL, *options = NULL;
+    conduit_node *p_options = NULL;
 
-    /* Try and get options for the preferred protocol. We do it like this so
-     * other protocol's options don't get saved too.
+    /* Try and get options for the preferred protocol.
      */
     sprintf(key, "io/options/%s", g_preferred_protocol);
     if(conduit_node_has_path(relay_about(), key))
-    {
         p_options = conduit_node_fetch(relay_about(), key);
-        /* Make an "options" node under n. */
-        options = conduit_node_fetch(n, "options");
-        /* Add the protocol node under "options" */
-        conduit_node_set_path_external_node(options, g_preferred_protocol, p_options);
-    }
+    return p_options;
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -966,8 +956,6 @@ macsio_conduit_sif_write(json_object *main_obj,
     if(strcmp(ext, iface_ext) == 0)
         ext = g_preferred_protocol_ext;
 
-    /* Add write options to mesh_root */
-    macsio_conduit_add_protocol_options(mesh_root);
 #ifdef DEBUG_PRINT
     printf("SIF: mesh\n" DIVIDER_STRING);
     conduit_node_print(mesh_root);
@@ -981,7 +969,8 @@ macsio_conduit_sif_write(json_object *main_obj,
 
     if(conduit_relay_io_supports_collective(g_preferred_protocol))
     {
-        conduit_relay_io_save2(mesh_root, filename, g_preferred_protocol);
+        conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
+            macsio_conduit_get_protocol_options());
     }
     else
     {
@@ -992,9 +981,10 @@ macsio_conduit_sif_write(json_object *main_obj,
         if(rank == 0)
         {
 #ifdef DEBUG_PRINT
-            printf("conduit_relay_io_save2 %s on rank %d\n", filename, rank);
+            printf("conduit_relay_io_save3 %s on rank %d\n", filename, rank);
 #endif
-            conduit_relay_io_save2(mesh_root, filename, g_preferred_protocol);
+            conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options());
             msg = 0;
             MPI_Send(&msg, 1, MPI_INT, rank+1, tag, MACSIO_MAIN_Comm);
         }
@@ -1004,10 +994,11 @@ macsio_conduit_sif_write(json_object *main_obj,
             MPI_Recv(&msg, 1, MPI_INT, rank-1, tag, MACSIO_MAIN_Comm, &status);
 
 #ifdef DEBUG_PRINT
-            printf("conduit_relay_io_save_merged2 %s on rank %d\n", filename, rank);
+            printf("conduit_relay_io_save_merged3 %s on rank %d\n", filename, rank);
 #endif
             /* Let this rank append to the file. */
-            conduit_relay_io_save_merged2(mesh_root, filename, g_preferred_protocol);
+            conduit_relay_io_save_merged3(mesh_root, filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options());
 
             if(rank < size-1)
                 MPI_Send(&msg, 1, MPI_INT, rank+1, tag, MACSIO_MAIN_Comm);
@@ -1018,7 +1009,8 @@ macsio_conduit_sif_write(json_object *main_obj,
         {
             MACSIO_LOG_MSG(Die, ("MPI is required for Conduit's SIF mode"));
         }
-        conduit_relay_io_save2(mesh_root, filename, g_preferred_protocol);
+        conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
+            macsio_conduit_get_protocol_options());
 #endif
     }
     /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
@@ -1069,7 +1061,8 @@ static void *CreateConduitFile(const char *fname, const char *nsname, void *user
     conduit_node *mesh_root = (conduit_node *)userData;
 
     /* We're the first to have the baton for the file. save. */
-    conduit_relay_io_save2(mesh_root, fname, g_preferred_protocol);
+    conduit_relay_io_save3(mesh_root, fname, g_preferred_protocol,
+       macsio_conduit_get_protocol_options());
 
     int *retval = (int *)malloc(sizeof(int));
     *retval = 1; /* Create */
@@ -1082,7 +1075,8 @@ static void *OpenConduitFile(const char *fname, const char *nsname,
     conduit_node *mesh_root = (conduit_node *)userData;
 
     /* We're next to have the baton for the file. save merged. */
-    conduit_relay_io_save_merged2(mesh_root, fname, g_preferred_protocol);
+    conduit_relay_io_save_merged3(mesh_root, fname, g_preferred_protocol,
+       macsio_conduit_get_protocol_options());
 
     int *retval = (int *)malloc(sizeof(int));
     *retval = 2; /* Open */
@@ -1147,14 +1141,14 @@ macsio_conduit_mif_write(json_object *main_obj,
                     domain_id,
                     dumpn,
                     ext);
-            /* Add write options to the individual mesh */
-            macsio_conduit_add_protocol_options(nodes[i]);
+
 #ifdef DEBUG_PRINT
             printf("MIF: mesh %d\n" DIVIDER_STRING, domain_id);
             conduit_node_print(nodes[i]);
 #endif
 
-            conduit_relay_io_save2(nodes[i], filename, g_preferred_protocol);
+            conduit_relay_io_save3(nodes[i], filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options());
             /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
         }
         /* We'll have numParts (global number of parts) files*/
@@ -1175,8 +1169,6 @@ macsio_conduit_mif_write(json_object *main_obj,
                "than %d ranks. The number of files will be %d", nFiles, size, size));
         }
 
-        /* Add write options to the mesh_root */
-        macsio_conduit_add_protocol_options(nodes[i]);
 #ifdef DEBUG_PRINT
         printf("MIF: mesh\n" DIVIDER_STRING);
         conduit_node_print(nodes[i]);
