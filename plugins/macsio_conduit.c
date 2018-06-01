@@ -137,9 +137,9 @@ set_preferred_protocol(void)
         return;
     }
 
-    if(conduit_node_has_path(relay_about(), "io/protocols/adios"))
+    if(conduit_node_has_path(relay_about(), "io/protocols/conduit_adios"))
     {
-        strcpy(g_preferred_protocol, "adios");
+        strcpy(g_preferred_protocol, "conduit_adios");
         strcpy(g_preferred_protocol_ext, "bp");
         /* Let the user pick a transport too (bp, hdf5, netcdf, flexpath, ...) */
         return;
@@ -447,7 +447,7 @@ static int process_args(int argi, int argc, char *argv[])
         strcpy(g_preferred_protocol_ext, "silo");
     else if(strcmp(g_preferred_protocol, "mpi") == 0)
         strcpy(g_preferred_protocol_ext, "mpi");
-    else if(strcmp(g_preferred_protocol, "adios") == 0) /* Do we want to do "adios_<transport>"? */
+    else if(strcmp(g_preferred_protocol, "conduit_adios") == 0) /* Do we want to do "adios_<transport>"? */
         strcpy(g_preferred_protocol_ext, "bp");
     else
     {
