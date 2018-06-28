@@ -39,14 +39,26 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include <macsio_mif.h>
 #include <macsio_utils.h>
 
-#ifdef HAVE_MPI
-#include <mpi.h>
-#endif
-
 #include <conduit/conduit.h>
 #include <conduit/conduit_blueprint.h>
-#include <conduit/conduit_relay.h>
 #include <conduit/conduit_utils.h>
+
+#ifdef HAVE_MPI
+  #include <mpi.h>
+  #include <conduit/conduit_relay_mpi_io.h>
+  #define CONDUIT_RELAY_MPI_IO_INITIALIZE(COMM)           conduit_relay_mpi_io_initialize(MPI_Comm_c2f(COMM))
+  #define CONDUIT_RELAY_MPI_IO_ABOUT(A,COMM)              conduit_relay_mpi_io_about(A,MPI_Comm_c2f(COMM))
+  #define CONDUIT_RELAY_MPI_IO_SAVE2(A,B,C,COMM)          conduit_relay_mpi_io_save2(A,B,C,MPI_Comm_c2f(COMM))
+  #define CONDUIT_RELAY_MPI_IO_SAVE3(A,B,C,D,COMM)        conduit_relay_mpi_io_save3(A,B,C,D,MPI_Comm_c2f(COMM))
+  #define CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(A,B,C,D,COMM) conduit_relay_mpi_io_save_merged3(A,B,C,D,MPI_Comm_c2f(COMM))
+#else
+  #include <conduit/conduit_relay.h>
+  #define CONDUIT_RELAY_MPI_IO_INITIALIZE(COMM)           conduit_relay_io_initialize()
+  #define CONDUIT_RELAY_MPI_IO_ABOUT(A,COMM)              conduit_relay_io_about(A)
+  #define CONDUIT_RELAY_MPI_IO_SAVE2(A,B,C,COMM)          conduit_relay_io_save2(A,B,C)
+  #define CONDUIT_RELAY_MPI_IO_SAVE3(A,B,C,D,COMM)        conduit_relay_io_save3(A,B,C,D)
+  #define CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(A,B,C,D,COMM) conduit_relay_io_save_merged3(A,B,C,D)
+#endif
 
 #define MAXKEYLEN 200
 #define MAXMSGLEN 2048
@@ -89,7 +101,7 @@ relay_about(void)
     if(g_conduit_relay_about == NULL)
     {
         g_conduit_relay_about = conduit_node_create();
-        conduit_relay_about(g_conduit_relay_about);
+        CONDUIT_RELAY_MPI_IO_ABOUT(g_conduit_relay_about, MACSIO_MAIN_Comm);
     }
     return g_conduit_relay_about;
 }
@@ -114,37 +126,6 @@ macsio_conduit_finalize(void)
 static void
 set_preferred_protocol(void)
 {
-#if 0
-    strcpy(g_preferred_protocol, "json");
-    strcpy(g_preferred_protocol_ext, "json");
-    printf("g_preferred_protocol = %s\n", g_preferred_protocol);
-    return;
-#endif
-
-#if 0
-    if(conduit_node_has_path(relay_about(), "io/protocols/conduit_silo_mesh"))
-    {
-        strcpy(g_preferred_protocol, "conduit_silo_mesh");
-        strcpy(g_preferred_protocol_ext, "silo");
-        return;
-    }
-#endif
-
-    if(conduit_node_has_path(relay_about(), "io/protocols/hdf5"))
-    {
-        strcpy(g_preferred_protocol, "hdf5");
-        strcpy(g_preferred_protocol_ext, "h5");
-        return;
-    }
-
-    if(conduit_node_has_path(relay_about(), "io/protocols/conduit_adios"))
-    {
-        strcpy(g_preferred_protocol, "conduit_adios");
-        strcpy(g_preferred_protocol_ext, "bp");
-        /* Let the user pick a transport too (bp, hdf5, netcdf, flexpath, ...) */
-        return;
-    }
-
     strcpy(g_preferred_protocol, "conduit_bin");
     strcpy(g_preferred_protocol_ext, "bin");
 }
@@ -366,10 +347,14 @@ static int process_args(int argi, int argc, char *argv[])
     char dummy[200];
     char **opt = NULL;
     int i, nopt = 0;
+
     conduit_node *options = NULL;
 
     c_protocol = g_preferred_protocol;
     c_option = dummy;
+
+    /* Make sure that we have initialized relay if we have not done it. */
+    CONDUIT_RELAY_MPI_IO_INITIALIZE(MACSIO_MAIN_Comm);
 
     /* Get options. */
     options = conduit_node_fetch(relay_about(), "io/options");
@@ -447,7 +432,7 @@ static int process_args(int argi, int argc, char *argv[])
         strcpy(g_preferred_protocol_ext, "silo");
     else if(strcmp(g_preferred_protocol, "mpi") == 0)
         strcpy(g_preferred_protocol_ext, "mpi");
-    else if(strcmp(g_preferred_protocol, "conduit_adios") == 0) /* Do we want to do "adios_<transport>"? */
+    else if(strcmp(g_preferred_protocol, "adios") == 0)
         strcpy(g_preferred_protocol_ext, "bp");
     else
     {
@@ -908,11 +893,12 @@ verify_mesh(conduit_node *mesh)
 }
 #endif
 
+/*-----------------------------------------------------------------------------*/
 int
 conduit_relay_io_supports_collective(const char *protocol)
 {
-    if(strcmp(protocol, "adios") == 0 ||
-       strcmp(protocol, "conduit_adios") == 0)
+    /* Right now, ADIOS is the only collective writer in Conduit. */
+    if(strcmp(protocol, "adios") == 0)
         return 1;
     return 0;
 }
@@ -950,11 +936,22 @@ macsio_conduit_sif_write(json_object *main_obj,
     char filename[MAXFILENAMELEN], rootname[MAXFILENAMELEN];
     int rank, size;
     const char *ext = NULL;
+#ifdef HAVE_MPI
+    MPI_Comm splitcomm;
+#else
+    int splitcomm = 0;
+#endif
+
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
     size = JsonGetInt(main_obj, "parallel/mpi_size");
     ext = json_object_path_get_string(main_obj, "clargs/fileext");
     if(strcmp(ext, iface_ext) == 0)
         ext = g_preferred_protocol_ext;
+
+#ifdef HAVE_MPI
+    /* This comm is split so each split comm has 1 rank. */
+    MPI_Comm_split(MACSIO_MAIN_Comm, rank, 0, &splitcomm);
+#endif
 
 #ifdef DEBUG_PRINT
     printf("SIF: mesh\n" DIVIDER_STRING);
@@ -969,11 +966,17 @@ macsio_conduit_sif_write(json_object *main_obj,
 
     if(conduit_relay_io_supports_collective(g_preferred_protocol))
     {
-        conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
-            macsio_conduit_get_protocol_options());
+        /* The format supports collective writes.
+         * Each rank will write to the same file at the same time.
+         */
+        CONDUIT_RELAY_MPI_IO_SAVE3(mesh_root, filename, g_preferred_protocol,
+            macsio_conduit_get_protocol_options(), MACSIO_MAIN_Comm);
     }
     else
     {
+        /* The format supports only serial writes.
+         * The ranks will sequentially append to the file. BAD!
+         */
 #ifdef HAVE_MPI
         /* NOTE: this is our own baton passing. 
          * All ranks contribute to the same file.
@@ -981,10 +984,10 @@ macsio_conduit_sif_write(json_object *main_obj,
         if(rank == 0)
         {
 #ifdef DEBUG_PRINT
-            printf("conduit_relay_io_save3 %s on rank %d\n", filename, rank);
+            printf("CONDUIT_RELAY_MPI_IO_SAVE3 %s on rank %d\n", filename, rank);
 #endif
-            conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
-                macsio_conduit_get_protocol_options());
+            CONDUIT_RELAY_MPI_IO_SAVE3(mesh_root, filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options(), splitcomm);
             msg = 0;
             MPI_Send(&msg, 1, MPI_INT, rank+1, tag, MACSIO_MAIN_Comm);
         }
@@ -994,23 +997,23 @@ macsio_conduit_sif_write(json_object *main_obj,
             MPI_Recv(&msg, 1, MPI_INT, rank-1, tag, MACSIO_MAIN_Comm, &status);
 
 #ifdef DEBUG_PRINT
-            printf("conduit_relay_io_save_merged3 %s on rank %d\n", filename, rank);
+            printf("CONDUIT_RELAY_MPI_IO_SAVE_MERGED3 %s on rank %d\n", filename, rank);
 #endif
             /* Let this rank append to the file. */
-            conduit_relay_io_save_merged3(mesh_root, filename, g_preferred_protocol,
-                macsio_conduit_get_protocol_options());
+            CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(mesh_root, filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options(), splitcomm);
 
             if(rank < size-1)
                 MPI_Send(&msg, 1, MPI_INT, rank+1, tag, MACSIO_MAIN_Comm);
         }
 #else
-        /* no HAVE_MPI */
+        /* no HAVE_MPI so there is only one rank. */
         if(size > 1)
         {
             MACSIO_LOG_MSG(Die, ("MPI is required for Conduit's SIF mode"));
         }
-        conduit_relay_io_save3(mesh_root, filename, g_preferred_protocol,
-            macsio_conduit_get_protocol_options());
+        CONDUIT_RELAY_MPI_IO_SAVE3(mesh_root, filename, g_preferred_protocol,
+            macsio_conduit_get_protocol_options(), MACSIO_MAIN_Comm);
 #endif
     }
     /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
@@ -1050,19 +1053,33 @@ macsio_conduit_sif_write(json_object *main_obj,
         sprintf(rootname, "%s_conduit_%03d.root",
             json_object_path_get_string(main_obj, "clargs/filebase"), 
             dumpn);
-        conduit_relay_io_save2(bp_root, rootname, "json");
+        CONDUIT_RELAY_MPI_IO_SAVE2(bp_root, rootname, "json", splitcomm);
         conduit_node_destroy(bp_root);
         /*MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);*/
     }
+
+#ifdef HAVE_MPI
+    MPI_Comm_free(&splitcomm);
+#endif
 }
+
+typedef struct
+{
+#ifdef HAVE_MPI
+    MPI_Comm comm;
+#else
+    int comm;
+#endif
+    conduit_node *mesh_root;
+} file_data;
 
 static void *CreateConduitFile(const char *fname, const char *nsname, void *userData)
 {
-    conduit_node *mesh_root = (conduit_node *)userData;
+    file_data *filedata = (file_data *)userData;
 
     /* We're the first to have the baton for the file. save. */
-    conduit_relay_io_save3(mesh_root, fname, g_preferred_protocol,
-       macsio_conduit_get_protocol_options());
+    CONDUIT_RELAY_MPI_IO_SAVE3(filedata->mesh_root, fname, g_preferred_protocol,
+       macsio_conduit_get_protocol_options(), filedata->comm);
 
     int *retval = (int *)malloc(sizeof(int));
     *retval = 1; /* Create */
@@ -1072,11 +1089,11 @@ static void *CreateConduitFile(const char *fname, const char *nsname, void *user
 static void *OpenConduitFile(const char *fname, const char *nsname,
                              MACSIO_MIF_ioFlags_t ioFlags, void *userData)
 {
-    conduit_node *mesh_root = (conduit_node *)userData;
+    file_data *filedata = (file_data *)userData;
 
     /* We're next to have the baton for the file. save merged. */
-    conduit_relay_io_save_merged3(mesh_root, fname, g_preferred_protocol,
-       macsio_conduit_get_protocol_options());
+    CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(filedata->mesh_root, fname, g_preferred_protocol,
+       macsio_conduit_get_protocol_options(), filedata->comm);
 
     int *retval = (int *)malloc(sizeof(int));
     *retval = 2; /* Open */
@@ -1101,14 +1118,24 @@ macsio_conduit_mif_write(json_object *main_obj,
     int i, domain_id, np, nt, write_one_file_per_part = 0;
     char filename[MAXFILENAMELEN], rootname[MAXFILENAMELEN];
     const char *tree = NULL;
-
+#ifdef HAVE_MPI
+    MPI_Comm splitcomm;
+#else
+    int splitcomm = 0;
+#endif
     int rank, size;
     const char *ext = NULL;
+
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
     size = JsonGetInt(main_obj, "parallel/mpi_size");
     ext = json_object_path_get_string(main_obj, "clargs/fileext");
     if(strcmp(ext, iface_ext) == 0)
         ext = g_preferred_protocol_ext;
+
+#ifdef HAVE_MPI
+    /* This comm is split so each split comm has 1 rank. */
+    MPI_Comm_split(MACSIO_MAIN_Comm, MACSIO_MAIN_Rank, 0, &splitcomm);
+#endif
 
     if(size == 1)
     {
@@ -1121,13 +1148,15 @@ macsio_conduit_mif_write(json_object *main_obj,
     }
 #if 1
     /* Force 1 file per part for Silo Mesh. */
-    if(strcmp(g_preferred_protocol, "conduit_silo_mesh") != 0)
+    if(strcmp(g_preferred_protocol, "conduit_silo_mesh") == 0)
         write_one_file_per_part = 1;
 #endif
     if(write_one_file_per_part)
     {
-/*printf("Write one file per part\n");*/
-        /* Each process will write its own files. */
+#ifdef DEBUG_PRINT
+        printf("MIF: Write one file per part (nnodes=%d, numParts=%d, nFiles=%d)\n", nnodes, numParts, nFiles);
+#endif
+        /* Each process will write its own files using splitcomm. */
         for(i = 0; i < nnodes; ++i)
         {
             char key[MAXKEYLEN];
@@ -1147,8 +1176,10 @@ macsio_conduit_mif_write(json_object *main_obj,
             conduit_node_print(nodes[i]);
 #endif
 
-            conduit_relay_io_save3(nodes[i], filename, g_preferred_protocol,
-                macsio_conduit_get_protocol_options());
+            CONDUIT_RELAY_MPI_IO_SAVE3(nodes[i], filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options(), splitcomm);
+
+            /*printf("Saved %s\n", filename);*/
             /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
         }
         /* We'll have numParts (global number of parts) files*/
@@ -1158,8 +1189,9 @@ macsio_conduit_mif_write(json_object *main_obj,
     }
     else
     {
-/*printf("Write %d parts to %d files\n", numParts, nFiles);*/
-
+#ifdef DEBUG_PRINT
+        printf("MIF: Write %d parts to %d files (nnodes=%d)\n", numParts, nFiles, nnodes);
+#endif
         /* NOTE: the output looks right for this. VisIt does not read it when 
          * more than one file is produced. Looks like an issue in VisIt.
          */
@@ -1174,40 +1206,85 @@ macsio_conduit_mif_write(json_object *main_obj,
         conduit_node_print(nodes[i]);
 #endif
 
-        /* We'll make some number of files and some will be written by
-         * more than one processor.
+        /* Create a baton. We do it up here since it looks like low overhead 
+         * and lets us compute the group number of the current MPI rank, 
+         * which we use for making file names, etc.
          */
+        file_data filedata;
+        filedata.comm = splitcomm;
+        filedata.mesh_root = mesh_root;
         int *file_ptr = NULL;
         MACSIO_MIF_ioFlags_t ioFlags = {MACSIO_MIF_WRITE,
-            JsonGetInt(main_obj, "clargs/exercise_scr")&0x1};
-
+                JsonGetInt(main_obj, "clargs/exercise_scr")&0x1};
         MACSIO_MIF_baton_t *bat = MACSIO_MIF_Init(nFiles, ioFlags, MACSIO_MAIN_Comm, 3,
-            CreateConduitFile, OpenConduitFile, CloseConduitFile, mesh_root);
+             CreateConduitFile, OpenConduitFile, CloseConduitFile, &filedata);
 
         /* Come up with the filename for the group. */
+        int group_rank = MACSIO_MIF_RankOfGroup(bat, rank);
         sprintf(filename, "%s_conduit_%05d_%03d.%s",
                 json_object_path_get_string(main_obj, "clargs/filebase"),
-                MACSIO_MIF_RankOfGroup(bat, rank),
+                group_rank,
                 dumpn,
                 ext);
 
-        /* Wait for our turn writing to the file. */
-        file_ptr = (int *) MACSIO_MIF_WaitForBaton(bat, filename, 0);
+        if(conduit_relay_io_supports_collective(g_preferred_protocol))
+        {
+#ifdef DEBUG_PRINT
+            printf("MIF: Collective group write 1 part to %d files.: rank=%d, group_rank=%d\n", nFiles, rank, group_rank);
+#endif
+            /* We have a collective format so we have groups of MPI ranks
+             * that will all want to write to the file at once.
+             */
+#ifdef HAVE_MPI
+            MPI_Comm groupcomm;
+            MPI_Comm_split(MACSIO_MAIN_Comm, group_rank, 0, &groupcomm);
+#else
+            int groupcom = 0;
+#endif
+            CONDUIT_RELAY_MPI_IO_SAVE3(nodes[0], filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options(), groupcomm);
+            /* Append other parts (assumes nnodes is same on all ranks). */
+            for(int i = 1; i < nnodes; ++i)
+            {
+                CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(nodes[i], filename, g_preferred_protocol,
+                    macsio_conduit_get_protocol_options(), groupcomm);
+            }
 
-        /* Hand off the baton to the next processor. This winds up closing
-         * the file so that the next processor that opens it can be assured
-         * of getting a consistent and up to date view of the file's contents. */
-        MACSIO_MIF_HandOffBaton(bat, file_ptr);
+#ifdef HAVE_MPI
+            MPI_Comm_free(&groupcomm);
+#endif
+            /* We'll have nFiles files since multiple ranks might write same file. */
+            np = nFiles;
+            nt = numParts;
+            tree = TREE_PATTERN;
+        }
+        else
+        {
+#ifdef DEBUG_PRINT
+            printf("MIF: Baton-based appends\n");
+#endif
+            /* The format is not collective so we must append to it serially.
+             * Use the split comm for this.
+             */
+
+            /* Wait for our turn writing to the file. */
+            file_ptr = (int *) MACSIO_MIF_WaitForBaton(bat, filename, 0);
+
+            /* Hand off the baton to the next processor. This winds up closing
+             * the file so that the next processor that opens it can be assured
+             * of getting a consistent and up to date view of the file's contents. */
+            MACSIO_MIF_HandOffBaton(bat, file_ptr);
+
+            /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
+
+            /* We'll have nFiles files since multiple ranks might write same file. */
+            np = (nFiles > size) ? size : nFiles;
+            nt = numParts;
+            tree = TREE_PATTERN;
+        }
 
         /* We're done using MACSIO_MIF, so finish it off */
         MACSIO_MIF_Finish(bat);
-
-        /*MACSIO_UTILS_RecordOutputFiles(dumpn, filename);*/
-
-        /* We'll have nFiles files since multiple ranks might write same file. */
-        np = (nFiles > size) ? size : nFiles;
-        nt = numParts;
-        tree = TREE_PATTERN;
     }
 
     /* Make the Blueprint index file. */
@@ -1240,22 +1317,27 @@ macsio_conduit_mif_write(json_object *main_obj,
 
         sprintf(filename, "%s_conduit_%s_%03d.%s",
             json_object_path_get_string(main_obj, "clargs/filebase"),
-            (nFiles > 1) ? "%05d" : "00000",
+            ((nFiles > 1) || (write_one_file_per_part && (numParts > 1))) ? "%05d" : "00000",
             dumpn,
             ext);
         conduit_node_set_path_char8_str(root, "file_pattern", filename);
         conduit_node_set_path_char8_str(root, "tree_pattern", tree);
-#ifdef DEBUG_PRINT
-        printf("SAVE INDEX\n" DIVIDER_STRING);
-#endif
+
         /* Save the index using json. */
         sprintf(rootname, "%s_conduit_%03d.root",
                 json_object_path_get_string(main_obj, "clargs/filebase"),
                 dumpn);
-        conduit_relay_io_save2(root, rootname, "json");
+#ifdef DEBUG_PRINT
+        printf("SAVE INDEX %s\n" DIVIDER_STRING, rootname);
+#endif
+        CONDUIT_RELAY_MPI_IO_SAVE2(root, rootname, "json", splitcomm);
         conduit_node_destroy(root);
         /*MACSIO_UTILS_RecordOutputFiles(dumpn, rootname);*/
     }
+
+#ifdef HAVE_MPI
+    MPI_Comm_free(&splitcomm);
+#endif
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -1404,7 +1486,13 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 
                     /* Add the blueprint mesh data. */
                     json_object_to_blueprint(this_part, mesh, meshName);
-
+#if 0
+                    if(rank == 0)
+                    {
+                        conduit_node_print(mesh_root);
+                        conduit_node_print(nodes[nnodes]);
+                    }
+#endif
 #ifdef DEBUG_PRINT
                     /* Verify the mesh data. */
                     verify_mesh(mesh);
