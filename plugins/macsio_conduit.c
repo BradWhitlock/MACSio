@@ -930,9 +930,10 @@ static void
 macsio_conduit_sif_write(json_object *main_obj,
     int dumpn,
     const char *meshName, 
-    conduit_node *mesh_root, conduit_node **nodes, int nnodes, int numParts)
+    conduit_node *mesh_root, conduit_node **nodes, int nnodes, int totalNumParts)
 {
     int msg, tag = 12345;
+    const char *tree = "/";
     char filename[MAXFILENAMELEN], rootname[MAXFILENAMELEN];
     int rank, size;
     const char *ext = NULL;
@@ -949,7 +950,9 @@ macsio_conduit_sif_write(json_object *main_obj,
         ext = g_preferred_protocol_ext;
 
 #ifdef HAVE_MPI
-    /* This comm is split so each split comm has 1 rank. */
+    /* This comm is split so each split comm has 1 rank. 
+     * We use this to write the index file.
+     */
     MPI_Comm_split(MACSIO_MAIN_Comm, rank, 0, &splitcomm);
 #endif
 
@@ -966,17 +969,33 @@ macsio_conduit_sif_write(json_object *main_obj,
 
     if(conduit_relay_io_supports_collective(g_preferred_protocol))
     {
+#ifdef DEBUG_PRINT
+        printf("SIF: size=%d, nnodes=%d, numParts=%d\n", size, nnodes, totalNumParts);
+#endif
         /* The format supports collective writes.
          * Each rank will write to the same file at the same time.
+         * NOTE: We write using nodes[] because this means that domains
+         *       will not have any domainXXXXX prefix.
          */
-        CONDUIT_RELAY_MPI_IO_SAVE3(mesh_root, filename, g_preferred_protocol,
+        CONDUIT_RELAY_MPI_IO_SAVE3(nodes[0], filename, g_preferred_protocol,
             macsio_conduit_get_protocol_options(), MACSIO_MAIN_Comm);
+        /* We add multiple parts at the end, appending to the file. */
+        for(int i = 1; i < nnodes; ++i)
+        {
+            CONDUIT_RELAY_MPI_IO_SAVE_MERGED3(nodes[i], filename, g_preferred_protocol,
+                macsio_conduit_get_protocol_options(), MACSIO_MAIN_Comm);
+        }
     }
     else
     {
         /* The format supports only serial writes.
          * The ranks will sequentially append to the file. BAD!
+         * NOTE: The data are written using prefixes like domainXXXXX so we
+         *       can accommodate multiple domains in a single file for
+         *       non-collective formats.
          */
+        tree = TREE_PATTERN;
+
 #ifdef HAVE_MPI
         /* NOTE: this is our own baton passing. 
          * All ranks contribute to the same file.
@@ -1034,7 +1053,7 @@ macsio_conduit_sif_write(json_object *main_obj,
              : nodes[0]
             ),
             meshName,
-            numParts,
+            totalNumParts,
             cindex);
         /* We need to store the protocol used to save the data files. */
         conduit_node_set_path_char8_str(bp_root, "protocol/name", g_preferred_protocol);
@@ -1042,10 +1061,10 @@ macsio_conduit_sif_write(json_object *main_obj,
         conduit_node_as_char8_str(conduit_node_fetch(g_conduit_about, "version")));
 
         conduit_node_set_path_int(bp_root, "number_of_files", 1);
-        conduit_node_set_path_int(bp_root, "number_of_trees", numParts);
+        conduit_node_set_path_int(bp_root, "number_of_trees", totalNumParts);
 
         conduit_node_set_path_char8_str(bp_root, "file_pattern", filename);
-        conduit_node_set_path_char8_str(bp_root, "tree_pattern", TREE_PATTERN);
+        conduit_node_set_path_char8_str(bp_root, "tree_pattern", tree);
 #ifdef DEBUG_PRINT
         printf("SAVE INDEX\n" DIVIDER_STRING);
 #endif
