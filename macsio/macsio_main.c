@@ -802,6 +802,16 @@ main(int argc, char *argv[])
 #endif
     errno = 0;
 
+#ifdef HAVE_CONDUIT
+    /* The static initialization mechanism for registering the plugins
+     * does not work well for Conduit+ADIOS -- it causes a SEGV on 
+     * Linux with icc. Explicitly register the plugin once MPI has 
+     * been initialized. This is safer.
+     */
+    extern void register_conduit_interface(void);
+    register_conduit_interface();
+#endif
+
     main_grp = MACSIO_TIMING_GroupMask("MACSIO main()");
     main_tid = MT_StartTimer("main", main_grp, MACSIO_TIMING_ITER_AUTO);
 

@@ -352,7 +352,9 @@ static int process_args(int argi, int argc, char *argv[])
 
     c_protocol = g_preferred_protocol;
     c_option = dummy;
+#if 1
 
+#endif
     /* Make sure that we have initialized relay if we have not done it. */
     CONDUIT_RELAY_MPI_IO_INITIALIZE(MACSIO_MAIN_Comm);
 
@@ -1433,19 +1435,22 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
     json_object *parts = NULL;
     char filename[1024], rootname[1024];
     const char *meshName = "Mesh";
-
+/*printf("main_dump: 0\n");*/
     /* process cl args */
     process_args(argi, argc, argv);
+/*printf("main_dump: 1\n");*/
 
     /* MPI rank and size. */
     rank = JsonGetInt(main_obj, "parallel/mpi_rank");
     size = JsonGetInt(main_obj, "parallel/mpi_size");
+/*printf("main_dump: 2\n");*/
 
     parts = JsonGetObj(main_obj, "problem/parts");
     if(parts != NULL)
     {
         int numParts = 0, totalNumParts = 0, nnodes = 0;
         conduit_node **nodes = NULL;
+/*printf("main_dump: 3\n");*/
 
         /* Build Conduit/Blueprint representations of the MACSio json data. */
         numParts = json_object_array_length(parts);
@@ -1455,6 +1460,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
             const char *meshName = NULL, *ext = NULL;
             FileWrite_t writeT = FileWrite_MIF;
             int nFiles = size;
+/*printf("main_dump: 4\n");*/
 
 #define COMBINE_ROOT
 #ifdef COMBINE_ROOT
@@ -1519,6 +1525,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     nnodes++;
                 }
             }
+/*printf("main_dump: 5\n");*/
 
             /* Get the file extension. If it has been overridden by the user,
              * then use that. Otherwise, use the file extension for our
@@ -1527,6 +1534,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
             ext = json_object_path_get_string(main_obj, "clargs/fileext");
             if(strcmp(ext, iface_ext) == 0)
                 ext = g_preferred_protocol_ext;
+/*printf("main_dump: 6\n");*/
 
 #ifdef HAVE_MPI
             /* Sum the total number of parts across ranks. */
@@ -1536,6 +1544,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
 #else
             totalNumParts = numParts;
 #endif
+/*printf("main_dump: 7\n");*/
 
 #ifdef DEBUG_PRINT
             printf("SAVING DATA\n" DIVIDER_STRING);
@@ -1556,6 +1565,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
                     meshName,
                     mesh_root, nodes, nnodes, totalNumParts, nFiles);
             }
+/*printf("main_dump: 8\n");*/
 
 #ifdef COMBINE_ROOT
             conduit_node_destroy(mesh_root);
@@ -1567,6 +1577,7 @@ main_dump(int argi, int argc, char **argv, json_object *main_obj,
             free(nodes);
         }
     }
+/*printf("main_dump: 9\n");*/
 
     /* Call relay with the conduit node. */
 }
@@ -1634,6 +1645,7 @@ static int register_this_interface()
     return 0;
 }
 
+#if 0
 /* this one statement is the only statement requiring compilation by
    a C++ compiler. That is because it involves initialization and non
    constant expressions (a function call in this case). This function
@@ -1642,6 +1654,13 @@ static int register_this_interface()
    iface_map array merely by virtue of the fact that this code is linked
    with a main. */
 static int dummy = register_this_interface();
+#else
+/* Provide a function we can call from macsio_main once MPI is initialized. */
+void register_conduit_interface(void)
+{
+    register_this_interface();
+}
+#endif
 
 /*!@}*/
 
